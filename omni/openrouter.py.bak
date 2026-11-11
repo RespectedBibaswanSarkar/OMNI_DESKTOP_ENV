@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any, Iterator
+
+import requests
+
+
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+class OpenRouterError(RuntimeError):
+    pass
+
+
+class OpenRouterGateway:
+    """OpenRouter gateway with cached discovery, free-model preference and fallback."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        timeout: float = 60.0,
+        cache_ttl: float = 21600.0,
+    ) -> None:
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self.timeout = timeout
+        self.cache_ttl = cache_ttl
+        self.prefer_free = os.environ.get(
+            "OMNI_PREFER_FREE", "true"
+        ).lower() in {"1", "true", "yes", "on"}
+
+        cache_root = Path(
+            os.environ.get(
+                "OMNI_CACHE_DIR",
+                str(Path.home() / ".cache" / "omni"),
+            )
+        )
+        self.cache_path = cache_root / "openrouter" / "models.json"
+
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "OMNI-Desktop-Assistant/1.0",
+            "Accept": "application/json",
+        })
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "HTTP-Referer": "http://localhost",
+            "X-Title": "OMNI Desktop Assistant",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def models(self, force: bool = False) -> list[dict[str, Any]]:
+        now = time.time()
+
+        if not force and self.cache_path.exists():
+            try:
+                cached = json.loads(
+                    self.cache_path.read_text(encoding="utf-8")
+                )
+                age = now - float(cached["fetched_at"])
+                if age < self.cache_ttl:
+                    return cached["models"]
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+
+        response = self.session.get(
+            OPENROUTER_MODELS_URL,
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+
+        payload = response.json()
+        records = payload.get("data", [])
+
+        if not isinstance(records, list):
+            raise OpenRouterError("Invalid OpenRouter model response")
+
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.cache_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({
+                "fetched_at": now,
+                "models": records,
+            }),
+            encoding="utf-8",
+        )
+        temporary.replace(self.cache_path)
+
+        return records
+
+    @staticmethod
+    def _is_free(model: dict[str, Any]) -> bool:
+        pricing = model.get("pricing") or {}
+        try:
+            prompt = float(pricing.get("prompt", -1))
+            completion = float(pricing.get("completion", -1))
+            return prompt == 0.0 and completion == 0.0
+        except (TypeError, ValueError):
+            return False
+
+    def candidates(self) -> list[dict[str, Any]]:
+        records = self.models()
+
+        usable = [
+            item for item in records
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and item["id"]
+        ]
+
+        if not usable:
+            raise OpenRouterError("OpenRouter returned no usable models")
+
+        if self.prefer_free:
+            free = [item for item in usable if self._is_free(item)]
+            if free:
+                return sorted(
+                    free,
+                    key=lambda item: (
+                        -int(item.get("context_length") or 0),
+                        item["id"],
+                    ),
+                )
+
+        return sorted(
+            usable,
+            key=lambda item: (
+                float((item.get("pricing") or {}).get("prompt") or 0),
+                item["id"],
+            ),
+        )
+
+    def stream(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float = 0.4,
+        max_tokens: int = 2048,
+    ) -> Iterator[str]:
+        if not self.api_key:
+            raise OpenRouterError(
+                "OPENROUTER_API_KEY is not configured"
+            )
+
+        if model:
+            candidates = [{"id": model}]
+        else:
+            candidates = self.candidates()
+
+        errors: list[str] = []
+
+        for candidate in candidates:
+            model_id = candidate["id"]
+
+            try:
+                response = self.session.post(
+                    OPENROUTER_CHAT_URL,
+                    headers=self._headers(),
+                    json={
+                        "model": model_id,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stream": True,
+                    },
+                    timeout=self.timeout,
+                    stream=True,
+                )
+
+                response.raise_for_status()
+
+                received = False
+
+                for line in response.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8", errors="replace")
+
+                    if not line.startswith("data:"):
+                        continue
+
+                    payload = line[5:].strip()
+
+                    if payload == "[DONE]":
+                        return
+
+                    try:
+                        event = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+
+                    if isinstance(content, str) and content:
+                        received = True
+                        yield content
+
+                if received:
+                    return
+
+                errors.append(f"{model_id}: empty response")
+
+            except requests.RequestException as exc:
+                errors.append(
+                    f"{model_id}: {type(exc).__name__}"
+                )
+
+            except (KeyError, TypeError, ValueError) as exc:
+                errors.append(
+                    f"{model_id}: invalid response ({type(exc).__name__})"
+                )
+
+        raise OpenRouterError(
+            "All OpenRouter model attempts failed: "
+            + "; ".join(errors[-5:])
+        )
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        return "".join(
+            self.stream(messages, model=model, **kwargs)
+        )
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "provider": "openrouter",
+            "configured": bool(self.api_key),
+            "prefer_free": self.prefer_free,
+            "cache_exists": self.cache_path.exists(),
+            "cache_path": str(self.cache_path),
+        }

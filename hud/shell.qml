@@ -6,32 +6,52 @@ ShellRoot {
     id: root
 
     property var state: ({})
-    property color accent: "#7aa2f7"
-    property color muted: "#8b93a7"
-    property color ink: "#d7dcec"
-    property color warn: "#e0af68"
+    property string reply: ""
+    property string query: ""
+    property string status: "READY"
+    property bool busy: false
 
-    function text(value, fallback) {
-        if (value === undefined || value === null || value === "") return fallback;
+    property color accent: "#8ba8ff"
+    property color ink: "#edf0fa"
+    property color muted: "#9099ad"
+    property color panel: "#ee111722"
+    property color line: "#347aa2f7"
+
+    function safe(value, fallback) {
+        if (value === undefined || value === null || value === "")
+            return fallback;
         return String(value);
     }
-    function pct(value) {
-        if (value === undefined || value === null) return "--";
-        return Math.round(Number(value) * 100) + "%";
+
+    function routingValue(key, fallback) {
+        if (!state || !state.routing)
+            return fallback;
+        return safe(state.routing[key], fallback);
     }
-    function routingField(key, fallback) {
-        if (!root.state || !root.state.routing) return fallback;
-        return root.text(root.state.routing[key], fallback);
+
+    function sendQuery() {
+        if (query.trim().length === 0 || busy)
+            return;
+
+        reply = "";
+        status = "THINKING";
+        busy = true;
+        assistantProcess.running = true;
     }
 
     Process {
-        id: reader
-        command: ["sh", "-c", "cat \"${OMNI_HUD_STATE:-$HOME/.cache/omni/hud/state.json}\" 2>/dev/null"]
+        id: stateReader
+        command: [
+            "sh", "-c",
+            "cat \"${OMNI_HUD_STATE:-$HOME/.cache/omni/hud/state.json}\" 2>/dev/null"
+        ]
+
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
-                    if (text && text.trim().length > 0) root.state = JSON.parse(text);
-                } catch (e) {
+                    if (text && text.trim().length > 0)
+                        root.state = JSON.parse(text);
+                } catch (error) {
                 }
             }
         }
@@ -41,270 +61,396 @@ ShellRoot {
         interval: 1000
         running: true
         repeat: true
-        onTriggered: reader.running = true
+        onTriggered: stateReader.running = true
+    }
+
+    Process {
+        id: assistantProcess
+        command: [
+            "python3",
+            "-m",
+            "omni.assistant",
+            root.query
+        ]
+
+        stdout: SplitParser {
+            onRead: data => {
+                root.reply += data;
+            }
+        }
+
+        stderr: StdioCollector {
+            onStreamFinished: {
+                if (text && text.trim().length > 0) {
+                    root.reply += "\n" + text.trim();
+                }
+            }
+        }
+
+        onExited: (exitCode, exitStatus) => {
+            root.busy = false;
+            root.status = exitCode === 0 ? "COMPLETE" : "ERROR";
+        }
     }
 
     PanelWindow {
+        id: overlay
+
         anchors {
             top: true
+            bottom: true
+            left: true
             right: true
         }
+
         margins {
-            top: 18
-            right: 18
+            top: 0
+            bottom: 0
+            left: 0
+            right: 0
         }
-        implicitWidth: 372
-        implicitHeight: card.height + 4
-        color: "transparent"
+
+        color: "#00000000"
+        visible: true
+        exclusiveZone: 0
+        implicitWidth: 760
+        implicitHeight: 680
+
+        Rectangle {
+            anchors.fill: parent
+            color: "#55000000"
+        }
 
         Rectangle {
             id: card
-            width: parent.width
-            height: body.implicitHeight + 28
-            radius: 14
-            color: "#e611141b"
+
+            width: 680
+            height: Math.min(590, overlay.height - 48)
+
+            anchors.centerIn: parent
+
+            radius: 25
+            color: root.panel
             border.width: 1
-            border.color: "#3a7aa2f7"
+            border.color: root.line
 
             gradient: Gradient {
-                GradientStop { position: 0.0; color: "#f0141822" }
-                GradientStop { position: 1.0; color: "#e60d1016" }
+                GradientStop {
+                    position: 0.0
+                    color: "#f0192233"
+                }
+                GradientStop {
+                    position: 1.0
+                    color: "#ee10151f"
+                }
             }
 
             Column {
-                id: body
                 anchors.fill: parent
-                anchors.margins: 14
-                spacing: 7
+                anchors.margins: 25
+                spacing: 17
 
                 Row {
-                    spacing: 8
-                    Text {
-                        text: "OMNI"
-                        color: root.accent
-                        font.family: "monospace"
-                        font.pixelSize: 15
-                        font.bold: true
-                        font.letterSpacing: 2
+                    width: parent.width
+                    spacing: 13
+
+                    Rectangle {
+                        width: 43
+                        height: 43
+                        radius: 22
+                        color: "#347aa2f7"
+                        border.color: root.accent
+                        border.width: 1
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "◈"
+                            color: root.accent
+                            font.pixelSize: 25
+                        }
                     }
+
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 3
+
+                        Text {
+                            text: "OMNI"
+                            color: root.ink
+                            font.pixelSize: 19
+                            font.bold: true
+                            font.letterSpacing: 3
+                        }
+
+                        Text {
+                            text: "YOUR DESKTOP INTELLIGENCE"
+                            color: root.muted
+                            font.pixelSize: 9
+                            font.letterSpacing: 1.5
+                        }
+                    }
+
+                    Item {
+                        width: 1
+                        height: 1
+                    }
+
+                    Rectangle {
+                        width: 9
+                        height: 9
+                        radius: 5
+                        color: root.busy ? "#e0af68" : "#73d6a1"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
                     Text {
-                        text: "// HYPRLAND ROUTER"
+                        text: root.status
                         color: root.muted
+                        font.pixelSize: 9
                         font.family: "monospace"
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: root.line
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 57
+                    radius: 15
+                    color: "#991b2332"
+                    border.width: 1
+                    border.color: "#447aa2f7"
+
+                    Row {
+                        anchors.fill: parent
+                        anchors.leftMargin: 16
+                        anchors.rightMargin: 14
+                        spacing: 10
+
+                        Text {
+                            text: "⌕"
+                            color: root.accent
+                            font.pixelSize: 25
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        TextInput {
+                            id: queryInput
+
+                            width: parent.width - 55
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            color: root.ink
+                            font.pixelSize: 15
+                            selectByMouse: true
+                            clip: true
+                            focus: true
+
+                            text: root.query
+
+                            onTextChanged: root.query = text
+
+                            onAccepted: root.sendQuery()
+
+                            Text {
+                                anchors.fill: parent
+                                text: "Ask anything about your desktop..."
+                                color: root.muted
+                                visible: !queryInput.text
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                    }
+                }
+
+                Row {
+                    width: parent.width
+                    spacing: 8
+
+                    Repeater {
+                        model: ["CONTEXT AWARE", "LOCAL DESKTOP", "MODEL ROUTING"]
+
+                        delegate: Rectangle {
+                            width: chipText.implicitWidth + 18
+                            height: 25
+                            radius: 7
+                            color: "#267aa2f7"
+                            border.width: 1
+                            border.color: "#337aa2f7"
+
+                            Text {
+                                id: chipText
+                                anchors.centerIn: parent
+                                text: modelData
+                                color: root.accent
+                                font.pixelSize: 8
+                                font.bold: true
+                                font.letterSpacing: 0.7
+                            }
+                        }
+                    }
+                }
+
+                Row {
+                    width: parent.width
+                    spacing: 8
+
+                    Text {
+                        text: "RESPONSE"
+                        color: root.muted
+                        font.pixelSize: 9
+                        font.letterSpacing: 1.4
+                    }
+
+                    Item {
+                        width: parent.width - 85
+                        height: 1
+                    }
+
+                    Text {
+                        text: root.busy ? "GENERATING" : "ASSISTANT"
+                        color: root.accent
+                        font.pixelSize: 9
+                    }
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 230
+                    radius: 15
+                    color: "#80101621"
+                    border.width: 1
+                    border.color: "#227aa2f7"
+
+                    Flickable {
+                        anchors.fill: parent
+                        anchors.margins: 16
+                        clip: true
+                        contentHeight: responseText.implicitHeight
+
+                        Text {
+                            id: responseText
+                            width: parent.width
+                            text: root.reply || "Your response will appear here."
+                            color: root.reply ? root.ink : root.muted
+                            font.pixelSize: 13
+                            wrapMode: Text.WordWrap
+                            lineHeight: 1.4
+                        }
+                    }
+                }
+
+                Text {
+                    text: "DESKTOP INTELLIGENCE"
+                    color: root.muted
+                    font.pixelSize: 9
+                    font.letterSpacing: 1.2
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 58
+                    radius: 13
+                    color: "#771b2332"
+                    border.width: 1
+                    border.color: "#277aa2f7"
+
+                    Row {
+                        anchors.fill: parent
+                        anchors.margins: 12
+                        spacing: 14
+
+                        Text {
+                            text: "AGENT  " + root.routingValue("name", "—")
+                            color: root.ink
+                            font.pixelSize: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Rectangle {
+                            width: 1
+                            height: 23
+                            color: root.line
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Text {
+                            text: "WHY  " + root.routingValue("reason", "Waiting for context")
+                            color: root.muted
+                            font.pixelSize: 9
+                            anchors.verticalCenter: parent.verticalCenter
+                            elide: Text.ElideRight
+                            width: 210
+                        }
+
+                        Rectangle {
+                            width: 1
+                            height: 23
+                            color: root.line
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        Text {
+                            text: "MEM  " + (
+                                root.state && root.state.modules
+                                ? root.safe(root.state.modules.resident_mb, "—") + " MB"
+                                : "—"
+                            )
+                            color: root.accent
+                            font.pixelSize: 9
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+                }
+
+                Row {
+                    width: parent.width
+                    spacing: 9
+
+                    Text {
+                        text: "◉"
+                        color: root.accent
+                        font.pixelSize: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    Text {
+                        text: "Type or hold [key] to speak"
+                        color: root.muted
                         font.pixelSize: 10
                         anchors.verticalCenter: parent.verticalCenter
                     }
-                }
 
-                Row {
-                    spacing: 8
-                    visible: root.state && root.state.mock === true
+                    Item {
+                        width: parent.width - 300
+                        height: 1
+                    }
+
                     Rectangle {
-                        radius: 4
-                        color: "#33e0af68"
-                        border.width: 1
-                        border.color: "#66e0af68"
-                        width: mockLabel.width + 12
-                        height: 18
+                        width: 105
+                        height: 37
+                        radius: 10
+                        color: root.busy ? "#444c5e" : "#477aa2f7"
+
                         Text {
-                            id: mockLabel
                             anchors.centerIn: parent
-                            text: "MOCK — NOT PAPER DATA"
-                            color: root.warn
-                            font.family: "monospace"
-                            font.pixelSize: 9
+                            text: root.busy ? "WORKING..." : "ASK OMNI  →"
+                            color: root.ink
+                            font.pixelSize: 10
                             font.bold: true
                         }
-                    }
-                }
 
-                Rectangle {
-                    width: parent.width
-                    height: 1
-                    color: "#267aa2f7"
-                }
-
-                Text {
-                    width: parent.width
-                    text: {
-                        if (!root.state || !root.state.context) return "waiting for context…";
-                        var c = root.state.context;
-                        return root.text(c.app_class, "unknown") + "  ·  ws " + root.text(c.workspace_id, "?") + "  ·  " + root.text(c.title, "");
-                    }
-                    color: root.muted
-                    font.family: "monospace"
-                    font.pixelSize: 10
-                    elide: Text.ElideRight
-                }
-
-                Text {
-                    text: "CHOSEN AGENT"
-                    color: root.muted
-                    font.family: "monospace"
-                    font.pixelSize: 9
-                    font.letterSpacing: 1
-                }
-
-                Row {
-                    spacing: 10
-                    Text {
-                        text: root.routingField("name", "—")
-                        color: root.ink
-                        font.family: "monospace"
-                        font.pixelSize: 20
-                        font.bold: true
-                    }
-                    Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        radius: 4
-                        color: "#1f7aa2f7"
-                        width: confText.width + 12
-                        height: 20
-                        Text {
-                            id: confText
-                            anchors.centerIn: parent
-                            text: root.pct(root.state && root.state.routing ? root.state.routing.confidence : null)
-                            color: root.accent
-                            font.family: "monospace"
-                            font.pixelSize: 11
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !root.busy
+                            onClicked: root.sendQuery()
                         }
                     }
-                }
-
-                Text {
-                    width: parent.width
-                    text: root.routingField("reason", "—")
-                    color: root.ink
-                    opacity: 0.85
-                    wrapMode: Text.WordWrap
-                    font.family: "monospace"
-                    font.pixelSize: 10
-                }
-
-                Text {
-                    width: parent.width
-                    text: {
-                        if (!root.state || !root.state.routing) return "";
-                        var r = root.state.routing;
-                        if (r.explored) return "top-2: " + (r.candidates || []).join(" / ") + "  ·  verifier: " + root.text(r.verification, "?");
-                        return "single choice  ·  no exploration";
-                    }
-                    color: root.muted
-                    font.family: "monospace"
-                    font.pixelSize: 9
-                }
-
-                Rectangle {
-                    width: parent.width
-                    height: 1
-                    color: "#1f7aa2f7"
-                }
-
-                Text {
-                    text: "MODULES"
-                    color: root.muted
-                    font.family: "monospace"
-                    font.pixelSize: 9
-                    font.letterSpacing: 1
-                }
-
-                Text {
-                    width: parent.width
-                    text: {
-                        var modules = root.state && root.state.modules ? root.state.modules : {};
-                        var resident = modules.resident || [];
-                        if (!resident.length) return "— no resident modules";
-                        return resident.join("  ·  ");
-                    }
-                    color: root.ink
-                    wrapMode: Text.WordWrap
-                    font.family: "monospace"
-                    font.pixelSize: 10
-                }
-
-                Text {
-                    width: parent.width
-                    text: {
-                        var modules = root.state && root.state.modules ? root.state.modules : {};
-                        var mem = modules.memory || {};
-                        if (modules.resident_mb === undefined || modules.resident_mb === null) return "memory —";
-                        var budget = modules.budget_mb !== undefined && modules.budget_mb !== null ? " / " + Number(modules.budget_mb).toFixed(0) : "";
-                        var pressure = mem.pressure !== undefined && mem.pressure !== null ? "  ·  pressure " + Number(mem.pressure).toFixed(2) : "";
-                        var params = modules.params_m ? "  ·  " + Number(modules.params_m).toFixed(1) + "M params" : "";
-                        return "memory " + Number(modules.resident_mb).toFixed(0) + budget + " MB" + pressure + params;
-                    }
-                    color: root.muted
-                    font.family: "monospace"
-                    font.pixelSize: 9
-                }
-
-                Text {
-                    width: parent.width
-                    text: {
-                        var modules = root.state && root.state.modules ? root.state.modules : {};
-                        return "strategy " + root.text(modules.strategy, "—");
-                    }
-                    color: root.muted
-                    font.family: "monospace"
-                    font.pixelSize: 9
-                }
-
-                Rectangle {
-                    width: parent.width
-                    height: 1
-                    color: "#1f7aa2f7"
-                }
-
-                Text {
-                    text: "SCHEDULER"
-                    color: root.muted
-                    font.family: "monospace"
-                    font.pixelSize: 9
-                    font.letterSpacing: 1
-                }
-
-                Text {
-                    width: parent.width
-                    text: {
-                        var sched = root.state && root.state.scheduler ? root.state.scheduler : {};
-                        var action = root.text(sched.action, "—");
-                        var label = root.text(sched.label, action);
-                        return label + "  ·  " + root.text(sched.policy, "default");
-                    }
-                    color: root.ink
-                    font.family: "monospace"
-                    font.pixelSize: 12
-                    font.bold: true
-                }
-
-                Text {
-                    width: parent.width
-                    text: {
-                        var sched = root.state && root.state.scheduler ? root.state.scheduler : {};
-                        var applied = sched.applied || {};
-                        var mode = applied.applied === true ? "applied" : (applied.dry_run === true ? "dry-run" : root.text(applied.reason, "idle"));
-                        var cpu = sched.cpu_weight !== undefined ? "cpu " + sched.cpu_weight : "cpu —";
-                        var io = sched.io_weight !== undefined ? "io " + sched.io_weight : "io —";
-                        return cpu + "  ·  " + io + "  ·  nice " + root.text(sched.nice, "0") + "  ·  " + mode;
-                    }
-                    color: root.muted
-                    wrapMode: Text.WordWrap
-                    font.family: "monospace"
-                    font.pixelSize: 9
-                }
-
-                Text {
-                    width: parent.width
-                    text: {
-                        var sched = root.state && root.state.scheduler ? root.state.scheduler : {};
-                        var actuator = sched.actuator || {};
-                        var kill = actuator.kill_switch === true ? "kill switch ready" : "kill switch —";
-                        var avail = actuator.available === true ? "cgroup v2" : "cgroup unavailable";
-                        return avail + "  ·  " + kill;
-                    }
-                    color: root.muted
-                    font.family: "monospace"
-                    font.pixelSize: 9
                 }
             }
         }

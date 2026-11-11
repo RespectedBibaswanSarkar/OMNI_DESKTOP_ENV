@@ -77,3 +77,22 @@ LLM env: `OMNI_LLM_BACKEND=mock|ollama|openai`, `OMNI_LLM_MODEL`, `OMNI_OLLAMA_U
 
 ## Next
 Phase 5: validate the real OpenCode adapter, run the full 30 tasks × 5 seeds across configured adapters (4 named; only `opencode` is installed, others recorded unavailable), feed real outcomes into scheduler KRLS via `observe`, and generate paper figures only from complete real matrices. Await "continue".
+
+
+## Phase 3 — desktop action safety
+
+- Added `omni/desktop/actions.py` with explicit read-only and reversible actions.
+- Desktop changes require one-use confirmation tokens.
+- Commands use fixed argument lists; arbitrary shell execution is not exposed.
+- Added desktop action validation tests.
+- Desktop registry is opt-in and is not yet wired into the orchestrator/HUD.
+
+
+## Phase 4 — voice input and output
+
+- Added optional local faster-whisper speech recognition.
+- Added optional pyttsx3 speech synthesis.
+- Added explicit terminal-controlled microphone capture.
+- Temporary recording is removed after transcription.
+- Text input/output remains available without audio dependencies.
+- Voice does not directly execute desktop actions.

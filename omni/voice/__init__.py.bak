@@ -1,0 +1,14 @@
+"""Optional local voice input and output."""
+from omni.voice.service import (
+    VoiceUnavailable,
+    record_and_transcribe,
+    speak_text,
+    transcribe_file,
+)
+
+__all__ = [
+    "VoiceUnavailable",
+    "record_and_transcribe",
+    "speak_text",
+    "transcribe_file",
+]

@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Sequence
+
+
+@dataclass(frozen=True)
+class ActionResult:
+    action: str
+    tier: str
+    success: bool
+    output: str = ""
+    confirmation_required: bool = False
+    confirmation_token: str | None = None
+
+
+@dataclass(frozen=True)
+class ActionSpec:
+    tier: str
+    confirmation: bool
+    description: str
+
+
+class DesktopActionRegistry:
+    """Allowlisted desktop controls; no shell execution or arbitrary commands."""
+
+    ACTIONS = {
+        "file.search": ActionSpec("read-only", False, "Search workspace filenames"),
+        "app.launch": ActionSpec("reversible", True, "Launch an approved application"),
+        "window.focus": ActionSpec("reversible", True, "Focus a Hyprland window"),
+        "workspace.switch": ActionSpec("reversible", True, "Switch workspace"),
+        "volume.set": ActionSpec("reversible", True, "Set audio volume"),
+        "brightness.set": ActionSpec("reversible", True, "Set display brightness"),
+        "wifi.set": ActionSpec("reversible", True, "Enable or disable Wi-Fi"),
+        "media.control": ActionSpec("reversible", True, "Control media playback"),
+    }
+
+    APPLICATIONS = {
+        "firefox": "firefox",
+        "code": "code",
+        "alacritty": "alacritty",
+        "nautilus": "nautilus",
+    }
+
+    MEDIA_ACTIONS = {"play-pause", "next", "previous"}
+
+    def __init__(
+        self,
+        workspace_root: str | Path,
+        runner: Callable[..., subprocess.CompletedProcess] | None = None,
+        token_ttl: float = 60.0,
+    ) -> None:
+        self.workspace_root = Path(workspace_root).expanduser().resolve()
+        self.runner = runner or subprocess.run
+        self.token_ttl = max(5.0, float(token_ttl))
+        self._pending: dict[str, tuple[str, dict, float]] = {}
+
+    def describe(self) -> list[dict]:
+        return [
+            {
+                "name": name,
+                "tier": spec.tier,
+                "requires_confirmation": spec.confirmation,
+                "description": spec.description,
+            }
+            for name, spec in self.ACTIONS.items()
+        ]
+
+    def prepare(self, action: str, arguments: dict | None = None) -> ActionResult:
+        args = dict(arguments or {})
+        spec = self._spec(action)
+        self._validate(action, args)
+
+        if not spec.confirmation:
+            return self.execute(action, args)
+
+        token = secrets.token_urlsafe(24)
+        self._pending[token] = (action, args, time.monotonic() + self.token_ttl)
+        return ActionResult(
+            action=action,
+            tier=spec.tier,
+            success=False,
+            output="Confirmation required before this desktop change.",
+            confirmation_required=True,
+            confirmation_token=token,
+        )
+
+    def confirm(self, token: str) -> ActionResult:
+        pending = self._pending.pop(token, None)
+        if pending is None:
+            raise ValueError("Unknown or already-used confirmation token.")
+        action, args, expires = pending
+        if time.monotonic() > expires:
+            raise ValueError("Confirmation token expired.")
+        return self._execute(action, args, confirmed=True)
+
+    def execute(self, action: str, arguments: dict | None = None) -> ActionResult:
+        return self._execute(action, arguments, confirmed=False)
+
+    def _execute(
+        self,
+        action: str,
+        arguments: dict | None = None,
+        *,
+        confirmed: bool = False,
+    ) -> ActionResult:
+        args = dict(arguments or {})
+        spec = self._spec(action)
+        self._validate(action, args)
+
+        if spec.confirmation and not confirmed:
+            raise PermissionError("Use prepare() and confirm() for this action.")
+
+        if action == "file.search":
+            return self._search(args["query"], args.get("limit", 30))
+
+        if action == "app.launch":
+            executable = self.APPLICATIONS[args["app"]]
+            return self._run(action, spec, [executable])
+
+        if action == "window.focus":
+            return self._run(
+                action, spec,
+                ["hyprctl", "dispatch", "focuswindow", f"address:{args['address']}"],
+            )
+
+        if action == "workspace.switch":
+            return self._run(
+                action, spec,
+                ["hyprctl", "dispatch", "workspace", str(args["workspace"])],
+            )
+
+        if action == "volume.set":
+            return self._run(
+                action, spec,
+                ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{args['percent']}%"],
+            )
+
+        if action == "brightness.set":
+            return self._run(
+                action, spec,
+                ["brightnessctl", "set", f"{args['percent']}%"],
+            )
+
+        if action == "wifi.set":
+            state = "on" if args["enabled"] else "off"
+            return self._run(action, spec, ["nmcli", "radio", "wifi", state])
+
+        if action == "media.control":
+            return self._run(action, spec, ["playerctl", args["command"]])
+
+        raise ValueError(f"Unsupported action: {action}")
+
+    def _spec(self, action: str) -> ActionSpec:
+        try:
+            return self.ACTIONS[action]
+        except KeyError as exc:
+            raise ValueError(f"Unknown desktop action: {action}") from exc
+
+    def _validate(self, action: str, args: dict) -> None:
+        if action == "file.search":
+            query = args.get("query")
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("A non-empty search query is required.")
+            if len(query) > 200:
+                raise ValueError("Search query is too long.")
+            limit = args.get("limit", 30)
+            if not isinstance(limit, int) or not 1 <= limit <= 100:
+                raise ValueError("limit must be between 1 and 100.")
+
+        elif action == "app.launch":
+            if args.get("app") not in self.APPLICATIONS:
+                raise ValueError("Application is not in the launch allowlist.")
+
+        elif action == "window.focus":
+            address = args.get("address", "")
+            if not isinstance(address, str) or not re.fullmatch(r"0x[0-9a-fA-F]+", address):
+                raise ValueError("Invalid Hyprland window address.")
+
+        elif action == "workspace.switch":
+            workspace = args.get("workspace")
+            if not isinstance(workspace, int) or not 1 <= workspace <= 10:
+                raise ValueError("Workspace must be an integer from 1 to 10.")
+
+        elif action in {"volume.set", "brightness.set"}:
+            percent = args.get("percent")
+            if not isinstance(percent, int) or not 0 <= percent <= 100:
+                raise ValueError("percent must be an integer from 0 to 100.")
+
+        elif action == "wifi.set":
+            if not isinstance(args.get("enabled"), bool):
+                raise ValueError("enabled must be true or false.")
+
+        elif action == "media.control":
+            if args.get("command") not in self.MEDIA_ACTIONS:
+                raise ValueError("Unsupported media command.")
+
+    def _search(self, query: str, limit: int) -> ActionResult:
+        needle = query.casefold()
+        matches = []
+        try:
+            for path in self.workspace_root.rglob("*"):
+                if len(matches) >= limit:
+                    break
+                if path.is_file() and needle in path.name.casefold():
+                    matches.append(str(path.relative_to(self.workspace_root)))
+        except OSError as exc:
+            return ActionResult("file.search", "read-only", False, str(exc))
+
+        return ActionResult(
+            "file.search", "read-only", True,
+            "\n".join(matches) if matches else "No matching filenames found.",
+        )
+
+    def _run(self, action: str, spec: ActionSpec, command: Sequence[str]) -> ActionResult:
+        executable = shutil.which(command[0])
+        if executable is None:
+            return ActionResult(
+                action, spec.tier, False,
+                f"Required executable not found: {command[0]}",
+            )
+
+        try:
+            result = self.runner(
+                [executable, *command[1:]],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return ActionResult(action, spec.tier, False, str(exc))
+
+        output = (result.stdout or result.stderr or "").strip()[:2000]
+        return ActionResult(
+            action, spec.tier, result.returncode == 0,
+            output or f"Command exited with status {result.returncode}.",
+        )

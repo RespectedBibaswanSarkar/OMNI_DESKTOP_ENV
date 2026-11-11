@@ -10,31 +10,22 @@ Capture completed.
 BAT analysis: signal has 65536 frames at 44100 Hz, 1 channels, 2 bytes per sample.
 
 Channel 1 - Checking for target frequency 997.00 Hz
-Amplitude: 13516.1; Percentage: [41]
-Detected peak at 987.16 Hz of 21.42 dB
- Total 21.4 dB from 987.16 to 987.16 Hz
- FAIL: Peak freq too low 987.16 Hz
-Detected peak at 991.87 Hz of 22.85 dB
- Total 30.2 dB from 989.85 to 993.22 Hz
+Amplitude: 19163.7; Percentage: [58]
+Detected peak at 991.87 Hz of 23.45 dB
+ Total 30.1 dB from 989.85 to 993.22 Hz
  FAIL: Peak freq too low 991.87 Hz
-Detected peak at 997.26 Hz of 36.19 dB
- Total 40.4 dB from 994.56 to 998.60 Hz
+Detected peak at 997.26 Hz of 36.70 dB
+ Total 40.9 dB from 994.56 to 998.60 Hz
  PASS: Peak detected at target frequency
-Detected peak at 1000.62 Hz of 24.21 dB
- Total 40.8 dB from 999.95 to 1002.64 Hz
+Detected peak at 1000.62 Hz of 24.80 dB
+ Total 41.3 dB from 999.95 to 1002.64 Hz
  PASS: Peak detected at target frequency
-Detected peak at 1005.33 Hz of 19.98 dB
- Total 40.9 dB from 1005.33 to 1005.33 Hz
- FAIL: Peak freq too high 1005.33 Hz
-Detected peak at 1993.84 Hz of 20.40 dB
- Total 40.9 dB from 1993.84 to 1993.84 Hz
+Detected peak at 1006.68 Hz of 20.09 dB
+ Total 41.3 dB from 1006.68 to 1006.68 Hz
+ FAIL: Peak freq too high 1006.68 Hz
+Detected peak at 1993.84 Hz of 24.98 dB
+ Total 41.5 dB from 1993.84 to 1994.51 Hz
  FAIL: Peak freq too high 1993.84 Hz
-Detected peak at 2991.10 Hz of 24.31 dB
- Total 41.0 dB from 2990.42 to 2991.10 Hz
- FAIL: Peak freq too high 2991.10 Hz
-Detected peak at 4984.94 Hz of 22.86 dB
- Total 41.1 dB from 4984.94 to 4984.94 Hz
- FAIL: Peak freq too high 4984.94 Hz
-Detected at least 8 signal(s) in total
+Detected at least 5 signal(s) in total
 
 Return value is -1003
