@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>OMNI dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>OMNI</h1>
+          <small>Autonomous Desktop Orchestrator</small>
+        </div>
+        <div class="status-pill" id="mode-pill">demo</div>
+      </header>
+      <main class="layout">
+        <section class="panel">
+          <h2>Goal</h2>
+          <textarea id="goal-input" rows="5">Create a Python project in my OMNI workspace, implement a small program, run its tests, detect a deliberate failure, repair it, and verify the final tests.</textarea>
+          <button id="submit-btn">Submit task</button>
+        </section>
+        <section class="panel">
+          <h2>Plan</h2>
+          <ul id="plan-list"></ul>
+        </section>
+        <section class="panel wide">
+          <h2>Task status</h2>
+          <div id="task-status">Idle</div>
+          <div id="task-report"></div>
+        </section>
+        <section class="panel wide">
+          <h2>Event stream</h2>
+          <pre id="event-stream">Awaiting events...</pre>
+        </section>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

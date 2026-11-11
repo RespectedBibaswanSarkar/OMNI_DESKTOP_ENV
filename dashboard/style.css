@@ -1,0 +1,11 @@
+body { margin: 0; font-family: Arial, sans-serif; background: #121212; color: #ececec; }
+.app-shell { max-width: 1200px; margin: 0 auto; padding: 20px; }
+.topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+.panel { background: #1f1f1f; border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px; }
+.wide { grid-column: 1 / -1; }
+textarea { width: 100%; box-sizing: border-box; background: #0f0f0f; color: white; border: 1px solid #333; border-radius: 6px; }
+button { background: #5fa3ff; color: #08131a; border: none; padding: 10px 14px; border-radius: 6px; cursor: pointer; }
+.status-pill { background: #153d2a; color: #9af5b4; border-radius: 999px; padding: 6px 12px; }
+#task-status { font-size: 20px; margin-bottom: 8px; }
+pre { white-space: pre-wrap; word-break: break-word; }

@@ -1,0 +1,23 @@
+# AGENTS.md — OMNI stack & operating notes
+
+- What: Python 3.14 desktop-agent prototype (FastAPI + pydantic + SQLite) extended into a Hyprland-native research system.
+- Not a git repo (as of Phase 0). Record source SHA-256 manifest if git hash is unavailable.
+- Entry point: `python3 -m omni.main <cmd>` (`status`, `inspect-desktop`, `submit-task`, `run-demo`, `dashboard`, `self-test`).
+- Package: `omni/` — `config.py`, `orchestrator/`, `planner/`, `adapters/`, `safety/`, `verification/`, `storage/`, `api/`, `schemas/`.
+- UI today: local web dashboard in `dashboard/` served at `/static/index.html`. Quickshell 0.3.2 is installed; use it for the Hyprland HUD (no new UI framework).
+- Core logic lives in `omni/orchestrator/engine.py` (action registry + verification); extend it, do not rewrite.
+- New work (planned): `omni/context/` (Hyprland/AT-SPI collector), `omni/routing/` (A1 IARS), `omni/modules/` (A3 AMPL), `omni/scheduler/` (A2 KRLS), `hud/` (Quickshell), `bench/` (tasks, adapters, runner, report).
+- LLM access must go through one client with a disk cache keyed by hash(model+prompt+params). Set `OMNI_LLM_BACKEND=ollama|openai|mock`; `--mock-llm` tags every log record `"mock": true`.
+- Mock/cached-replay runs are excluded from paper figures. Missing data produces no figure and a printed list of missing runs.
+- Environment: Hyprland 0.56.2 live (`HYPRLAND_INSTANCE_SIGNATURE` set), kernel 7.0.0-42-generic with `CONFIG_SCHED_CLASS_EXT=y`, cgroup v2, `grim`, `bpftrace`, `hyprctl`, `quickshell`, `ags`, `gjs`.
+- Installed agent CLIs: OpenCode only. No `ollama` server (11434 closed), no PyAT-SPI (use `gdbus`/AT-SPI DBus fallback), no Claude/Aider/Interpreter (bench records "not available").
+- Run tests: `python3 -m pytest -q` (48 passing; do not add slow tests to this command).
+- Run demo: `python3 -m omni.main run-demo --workspace ./workspace/demo`.
+- Run dashboard: `python3 -m omni.main dashboard --host 127.0.0.1 --port 8000`.
+- Routing: `python3 -m omni.main route --once` (AMPL on; `--no-modules`, `--budget-mb N`); scheduler: `python3 -m omni.main schedule --once` (`--apply`, `--restore`, `--simulate S1|S2|S3|all`); HUD: `python3 -m omni.main hud` (Quickshell reads `~/.cache/omni/hud/state.json` or `OMNI_HUD_STATE`).
+- Bench: `python3 -m omni.main bench --list`; smoke `bench --smoke --adapter mock --results DIR --workspaces DIR`; full mock `bench --tasks all --adapter mock ...`; report `bench --report --results DIR --tasks ... --adapters opencode --seeds 0`. Mock/cached records are tagged and excluded from figures; missing real runs suppress figures and are printed.
+- Privacy: never persist raw keystrokes; screenshots are encoded locally and not stored unless `OMNI_DEBUG_FRAMES=1`.
+- Safety: no kernel modules; scheduling actuation via cgroup v2 + nice/ionice, optional sched_ext behind the same interface; kill switch restores defaults. Scheduler actuation is dry-run unless `--apply`; it never moves a process without an explicit pid.
+- Honest stubs are marked `STUB:` in code and listed in `STATUS.md`. No invented measurements anywhere.
+- Phase discipline: stop after each phase, report 5 lines, wait for "continue".
+- Status/resume file: `STATUS.md` (update at the end of every phase).
