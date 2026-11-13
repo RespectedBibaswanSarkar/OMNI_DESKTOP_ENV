@@ -1,0 +1,104 @@
+{
+  "experiment": "omni_pilot_ablation",
+  "seed_note": "IARS seed=7, KRLS default; generation mocked (labelled)",
+  "configs": {
+    "full": {
+      "tasks": 5,
+      "verified_count": 5,
+      "success_rate": 1.0,
+      "verification_pass_rate": 1.0,
+      "mean_latency_s": 0.023,
+      "median_latency_s": 0.005,
+      "mean_reward": 1.2,
+      "fallback_generation": 5,
+      "final_iars_updates": 5,
+      "final_krls_updates": 5,
+      "agents": [
+        "browser-ops",
+        "document-editor"
+      ],
+      "models": [
+        "gemma3:4b",
+        "qwen3:4b"
+      ]
+    },
+    "no_iars": {
+      "tasks": 5,
+      "verified_count": 5,
+      "success_rate": 1.0,
+      "verification_pass_rate": 1.0,
+      "mean_latency_s": 0.022,
+      "median_latency_s": 0.002,
+      "mean_reward": 1.2,
+      "fallback_generation": 5,
+      "final_iars_updates": 0,
+      "final_krls_updates": 5,
+      "agents": [
+        "document-editor",
+        "planner"
+      ],
+      "models": [
+        "qwen3:4b"
+      ]
+    },
+    "no_ampl": {
+      "tasks": 5,
+      "verified_count": 5,
+      "success_rate": 1.0,
+      "verification_pass_rate": 1.0,
+      "mean_latency_s": 0.034,
+      "median_latency_s": 0.011,
+      "mean_reward": 1.1999,
+      "fallback_generation": 5,
+      "final_iars_updates": 5,
+      "final_krls_updates": 5,
+      "agents": [
+        "browser-ops",
+        "document-editor"
+      ],
+      "models": [
+        "gemma3:4b",
+        "qwen3:4b"
+      ]
+    },
+    "no_krls": {
+      "tasks": 5,
+      "verified_count": 5,
+      "success_rate": 1.0,
+      "verification_pass_rate": 1.0,
+      "mean_latency_s": 0.022,
+      "median_latency_s": 0.004,
+      "mean_reward": 1.2,
+      "fallback_generation": 5,
+      "final_iars_updates": 5,
+      "final_krls_updates": 0,
+      "agents": [
+        "browser-ops",
+        "document-editor"
+      ],
+      "models": [
+        "gemma3:4b",
+        "qwen3:4b"
+      ]
+    },
+    "baseline": {
+      "tasks": 5,
+      "verified_count": 5,
+      "success_rate": 1.0,
+      "verification_pass_rate": 1.0,
+      "mean_latency_s": 0.02,
+      "median_latency_s": 0.002,
+      "mean_reward": 1.2,
+      "fallback_generation": 5,
+      "final_iars_updates": 0,
+      "final_krls_updates": 0,
+      "agents": [
+        "document-editor",
+        "planner"
+      ],
+      "models": [
+        "qwen3:1.7b"
+      ]
+    }
+  }
+}

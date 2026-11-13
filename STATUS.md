@@ -1,6 +1,20 @@
 # OMNI status — resume here
 
-Updated: Phase 4 (bench harness + mock smoke) — 2026-11-09
+Updated: FINAL DELIVERY (end-to-end desktop experience) — 2026-11-13
+
+## Final delivery additions (this pass)
+- `omni/local_models.py` — Ollama-only model infrastructure: live discovery via `/api/tags` + `/api/ps`, digest-based alias dedup (`llama3.2:latest` ≡ `llama3.2:3b` verified), suggested-role registry, task-kind capability matching with observed-latency tie-breaking, fallback chains, bounded context/generation, connection checks + timeouts, graceful unavailability. No cloud APIs.
+- `omni/pipeline.py` — full end-to-end pipeline (background worker, queue, cancellation, duplicate suppression): context → IARS (real routing; agent determines model-capability class) → AMPL (real memory-budgeted module plan) → local model selection → KRLS scheduling decision (dry-run actuation) → structured JSON plan generation (fallback plan when unparseable, honestly labelled) → safe execution in an isolated per-task workspace (mkdir/write_file/write_json only, path containment) → independent verification (file exists / JSON valid / non-empty) → reward (IARS.implicit_reward + verification fraction) → real posterior updates (`IARS.observe`, `KRLSPolicy.update`) → JSONL telemetry + HUD state publish.
+- `omni/system_stats.py` — real CPU/mem/disk from /proc + statvfs; `nvidia-smi` GPU when tooling works; unavailable sources render as "unavailable".
+- `omni/api/app.py` — extended with `/api/state`, `/api/tasks` (async submit/cancel/poll), `/api/algorithms` observatory, `/api/models` (+select/refresh), `/api/system`, `/api/settings` (persisted); legacy orchestrator endpoints kept.
+- `dashboard/` — rewritten 7-view experience (Home, AI Command Center, Algorithm Observatory, Local Model Center, System Monitor, History, Settings): dark graphite glass UI, real-data-only charts (reward canvas from recorded rewards), model table with role/latency/alias/loaded status, stage-by-stage pipeline view, polling never blocks on inference.
+- `run_omni.sh` — one-command launch; checks python deps + Ollama, prints discovered models and dashboard URL; `--offline` mode labels simulated outputs; Ctrl+C graceful shutdown. Verified live (both modes).
+- `omni/experiment.py` — pilot ablation (5 fixed tasks × full/no-iars/no-ampl/no-krls/baseline; mock generation, real algorithms) → `research/results/` with `runs.jsonl`, `results.csv`, `summary.json`, `figures/*.png|svg` + 7 research docs (IMPLEMENTATION_STATUS, ARCHITECTURE, ALGORITHM_VALIDATION, EXPERIMENT_PROTOCOL, EXPERIMENT_RESULTS, LIMITATIONS, REPRODUCIBILITY). Ablations verified to change actual routing/models/update counts.
+- Tests: **103 passing** (`python3 -m pytest -q`); new suite `tests/test_pipeline.py` covers end-to-end verification, reward→update propagation, ablations, structured-JSON extraction, model discovery/dedup/fallback, duplicate submission (mock inference only).
+- Real-inference demonstration: gemma3:4b structured JSON task, 3/3 executed, verified, ~51 s cold load.
+
+## Previous phases (summary)
+- Phase 0 baseline repairs; Phase 1 LLM cache + context collector + IARS; Phase 2 AMPL modules; Phase 3 KRLS scheduler + cgroup actuator + HUD; Phase 4 bench harness (30 tasks, mock/opencode adapters, strict real-run reporting). Details below and in git-adjacent docs.
 
 ## Done
 - Phase 0 baseline repairs: planner multi-line strings, API static dir, TestClient lifespan; added CLI `__main__` guard (`python3 -m omni.main` works).

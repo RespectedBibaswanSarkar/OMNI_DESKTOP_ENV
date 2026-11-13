@@ -3,38 +3,156 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>OMNI dashboard</title>
+    <title>OMNI — Intelligent Desktop</title>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <header class="topbar">
-        <div>
-          <h1>OMNI</h1>
-          <small>Autonomous Desktop Orchestrator</small>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">◉</div>
+          <div>
+            <div class="brand-name">OMNI</div>
+            <div class="brand-sub">Intelligent Desktop</div>
+          </div>
         </div>
-        <div class="status-pill" id="mode-pill">demo</div>
-      </header>
-      <main class="layout">
-        <section class="panel">
-          <h2>Goal</h2>
-          <textarea id="goal-input" rows="5">Create a Python project in my OMNI workspace, implement a small program, run its tests, detect a deliberate failure, repair it, and verify the final tests.</textarea>
-          <button id="submit-btn">Submit task</button>
+        <nav id="nav">
+          <button class="nav-item active" data-view="home"><svg viewBox="0 0 24 24"><path d="M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
+          <button class="nav-item" data-view="command"><svg viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm2 4 3 3-3 3m5 1h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Command</button>
+          <button class="nav-item" data-view="algorithms"><svg viewBox="0 0 24 24"><path d="M4 20V10m6 10V4m6 16v-7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="4" cy="7" r="1.6"/><circle cx="10" cy="13" r="1.6"/><circle cx="16" cy="9" r="1.6"/></svg>Algorithms</button>
+          <button class="nav-item" data-view="models"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="9" y="9" width="6" height="6" rx="1.2"/></svg>Models</button>
+          <button class="nav-item" data-view="monitor"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 12V5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Monitor</button>
+          <button class="nav-item" data-view="history"><svg viewBox="0 0 24 24"><path d="M12 7v5l3 3m6-3a9 9 0 1 1-9-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>History</button>
+          <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Settings</button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="pill" id="offline-pill">local-only</div>
+          <div class="version">v0.4 · research prototype</div>
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="topbar">
+          <h2 id="view-title">OMNI Home</h2>
+          <div class="topbar-pills">
+            <span class="pill" id="pill-ollama">Ollama: checking…</span>
+            <span class="pill" id="pill-model">model: —</span>
+            <span class="pill" id="pill-infer">idle</span>
+          </div>
+        </header>
+
+        <!-- ============ A. HOME ============ -->
+        <section class="view active" id="view-home">
+          <div class="hero card">
+            <div class="hero-text">
+              <h1>Good day, operator.</h1>
+              <p>OMNI routes every task through context analysis, IARS intent routing, AMPL module selection, local model inference and KRLS adaptive scheduling — entirely on your machine.</p>
+              <div class="hero-actions">
+                <button class="btn primary" data-quick="Analyse my research project and organize its next milestones.">Run research-organisation demo</button>
+                <button class="btn" data-quick="Create a small Python project with notes and a plan in my workspace.">Create sample project</button>
+                <button class="btn ghost" data-quick="Write a short report on my current desktop context.">Generate report</button>
+              </div>
+            </div>
+          </div>
+          <div class="grid-4">
+            <div class="card stat"><div class="stat-label">Active model</div><div class="stat-value" id="home-model">—</div><div class="stat-sub" id="home-model-role"></div></div>
+            <div class="card stat"><div class="stat-label">Inference service</div><div class="stat-value" id="home-ollama">—</div><div class="stat-sub" id="home-ollama-sub"></div></div>
+            <div class="card stat"><div class="stat-label">Workload</div><div class="stat-value" id="home-workload">0 / 0</div><div class="stat-sub">running / queued</div></div>
+            <div class="card stat"><div class="stat-label">Tasks completed</div><div class="stat-value" id="home-tasks">0</div><div class="stat-sub" id="home-verified"></div></div>
+          </div>
+          <div class="grid-3">
+            <div class="card"><h3>System</h3><div id="home-system"></div></div>
+            <div class="card"><h3>Recent tasks</h3><div id="home-recent" class="list"></div></div>
+            <div class="card"><h3>Desktop actions</h3><div id="home-actions" class="list"></div></div>
+          </div>
         </section>
-        <section class="panel">
-          <h2>Plan</h2>
-          <ul id="plan-list"></ul>
+
+        <!-- ============ B. COMMAND ============ -->
+        <section class="view" id="view-command">
+          <div class="card command-card">
+            <h3>AI Command Center</h3>
+            <textarea id="cmd-goal" rows="3" placeholder="Describe a task… e.g. 'Analyse my research project and organize its next milestones.'"></textarea>
+            <div class="command-row">
+              <button class="btn primary" id="cmd-submit">Submit task</button>
+              <span class="hint">Runs in an isolated sandbox: IARS → AMPL → model → KRLS → execute → verify → reward.</span>
+            </div>
+          </div>
+          <div class="command-grid">
+            <div class="card"><h3>Pipeline</h3><div id="cmd-stages" class="stages"><div class="muted">No task yet.</div></div></div>
+            <div class="card"><h3>Result</h3><pre id="cmd-result" class="mono">—</pre></div>
+          </div>
+          <div class="grid-3">
+            <div class="card"><h3>Verification</h3><div id="cmd-verification" class="list muted">—</div></div>
+            <div class="card"><h3>Reward &amp; adaptation</h3><div id="cmd-reward" class="list muted">—</div></div>
+            <div class="card"><h3>Algorithms</h3><div id="cmd-algos" class="list muted">—</div></div>
+          </div>
         </section>
-        <section class="panel wide">
-          <h2>Task status</h2>
-          <div id="task-status">Idle</div>
-          <div id="task-report"></div>
+
+        <!-- ============ C. ALGORITHMS ============ -->
+        <section class="view" id="view-algorithms">
+          <div class="grid-3">
+            <div class="card"><h3>IARS — intent routing</h3><div id="alg-iars" class="list muted">—</div></div>
+            <div class="card"><h3>AMPL — module selection</h3><div id="alg-ampl" class="list muted">—</div></div>
+            <div class="card"><h3>KRLS — adaptive scheduler</h3><div id="alg-krls" class="list muted">—</div></div>
+          </div>
+          <div class="grid-2">
+            <div class="card"><h3>Decision history (last 40)</h3><div id="alg-history" class="list muted">—</div></div>
+            <div class="card"><h3>Observed reward trail</h3><div id="alg-rewards" class="spark-wrap"><canvas id="reward-canvas" width="520" height="140"></canvas><div class="muted" id="alg-rewards-note">rewards accumulate as tasks complete</div></div></div>
+          </div>
         </section>
-        <section class="panel wide">
-          <h2>Event stream</h2>
-          <pre id="event-stream">Awaiting events...</pre>
+
+        <!-- ============ D. MODELS ============ -->
+        <section class="view" id="view-models">
+          <div class="card">
+            <div class="command-row">
+              <h3 style="margin:0">Local Model Center</h3>
+              <div class="spacer"></div>
+              <span class="pill" id="models-auto">auto-routing: on</span>
+              <button class="btn" id="models-refresh">Refresh</button>
+            </div>
+            <table class="table" id="models-table">
+              <thead><tr><th></th><th>Model</th><th>Role</th><th>Params</th><th>Context</th><th>Capabilities</th><th>Latency (obs.)</th><th>Status</th></tr></thead>
+              <tbody id="models-body"><tr><td colspan="8" class="muted">loading…</td></tr></tbody>
+            </table>
+          </div>
         </section>
-      </main>
+
+        <!-- ============ E. MONITOR ============ -->
+        <section class="view" id="view-monitor">
+          <div class="grid-2">
+            <div class="card"><h3>System monitor</h3><div id="mon-system"></div></div>
+            <div class="card"><h3>Active tasks &amp; inference</h3><div id="mon-tasks" class="list"></div></div>
+          </div>
+        </section>
+
+        <!-- ============ F. HISTORY ============ -->
+        <section class="view" id="view-history">
+          <div class="card">
+            <h3>Task &amp; experiment history</h3>
+            <table class="table">
+              <thead><tr><th>Task</th><th>Goal</th><th>Intent</th><th>Model</th><th>Sched</th><th>Dur</th><th>Verified</th><th>Reward</th><th>Status</th></tr></thead>
+              <tbody id="history-body"><tr><td colspan="9" class="muted">no tasks yet</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- ============ G. SETTINGS ============ -->
+        <section class="view" id="view-settings">
+          <div class="card settings-card">
+            <h3>Settings</h3>
+            <form id="settings-form">
+              <label>Ollama endpoint <input name="ollama_url" type="text" /></label>
+              <label>Preferred model <input name="preferred_model" type="text" placeholder="empty = automatic" /></label>
+              <label class="check"><input name="auto_select" type="checkbox" /> Automatic model selection</label>
+              <label>Inference token budget (num_predict) <input name="max_gen_tokens" type="number" min="64" max="4096" /></label>
+              <label>Inference timeout (s) <input name="gen_timeout_s" type="number" min="10" max="600" /></label>
+              <label class="check"><input name="safe_execution" type="checkbox" /> Safe execution mode (required for task submission)</label>
+              <label class="check"><input name="offline_mode" type="checkbox" /> Offline mode (simulated outputs, clearly labelled)</label>
+              <div class="command-row"><button class="btn primary" type="submit">Save settings</button><span id="settings-saved" class="hint"></span></div>
+            </form>
+          </div>
+        </section>
+      </div>
     </div>
     <script src="/static/app.js"></script>
   </body>
