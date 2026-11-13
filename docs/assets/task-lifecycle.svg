@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#4a5561"/></marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5ee6c5"/></marker>
+  </defs>
+  <rect width="1200" height="620" fill="#0d1014"/>
+  <text x="600" y="40" text-anchor="middle" font-size="20" font-weight="650" fill="#e8ecf1">OMNI Task Lifecycle</text>
+  <text x="600" y="61" text-anchor="middle" font-size="11.5" fill="#5d6875">a generated plan is not an executed task — only verified outcomes count</text>
+
+  <g font-size="12">
+    <!-- stage boxes -->
+    <g transform="translate(60,110)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#2a323c"/>
+      <text x="80" y="26" text-anchor="middle" fill="#e8ecf1">1 · User goal</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">submitted to /api/tasks</text>
+    </g>
+    <g transform="translate(290,110)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#2a323c"/>
+      <text x="80" y="26" text-anchor="middle" fill="#e8ecf1">2 · Context snapshot</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">Hyprland + features φ</text>
+    </g>
+    <g transform="translate(520,110)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#5ee6c5" stroke-opacity="0.55"/>
+      <text x="80" y="26" text-anchor="middle" fill="#5ee6c5">3 · IARS routing</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">agent + confidence</text>
+    </g>
+    <g transform="translate(750,110)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#5ee6c5" stroke-opacity="0.55"/>
+      <text x="80" y="26" text-anchor="middle" fill="#5ee6c5">4 · AMPL modules</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">resident set vs budget</text>
+    </g>
+    <g transform="translate(980,110)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#6ea8ff" stroke-opacity="0.55"/>
+      <text x="80" y="26" text-anchor="middle" fill="#6ea8ff">5 · Model selection</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">capability match + fallback</text>
+    </g>
+
+    <g transform="translate(750,250)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#ffb454" stroke-opacity="0.55"/>
+      <text x="80" y="26" text-anchor="middle" fill="#ffb454">6 · KRLS decision</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">boost / balanced / throttle</text>
+    </g>
+    <g transform="translate(520,250)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#6ea8ff" stroke-opacity="0.55"/>
+      <text x="80" y="26" text-anchor="middle" fill="#6ea8ff">7 · Plan generation</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">bounded · JSON or labelled fallback</text>
+    </g>
+    <g transform="translate(290,250)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#2a323c"/>
+      <text x="80" y="26" text-anchor="middle" fill="#e8ecf1">8 · Execution</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">isolated sandbox · file ops only</text>
+    </g>
+    <g transform="translate(60,250)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#2a323c"/>
+      <text x="80" y="26" text-anchor="middle" fill="#e8ecf1">9 · Verification</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">exists · valid JSON · content</text>
+    </g>
+
+    <g transform="translate(60,390)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#2a323c"/>
+      <text x="80" y="26" text-anchor="middle" fill="#e8ecf1">10 · Reward</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">implicit + verification fraction</text>
+    </g>
+    <g transform="translate(290,390)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#5ee6c5" stroke-opacity="0.55"/>
+      <text x="80" y="26" text-anchor="middle" fill="#5ee6c5">11 · Adaptive updates</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">IARS posterior · KRLS model</text>
+    </g>
+    <g transform="translate(520,390)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#2a323c"/>
+      <text x="80" y="26" text-anchor="middle" fill="#e8ecf1">12 · Telemetry</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">JSONL · mock/cached tagged</text>
+    </g>
+    <g transform="translate(750,390)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#2a323c"/>
+      <text x="80" y="26" text-anchor="middle" fill="#e8ecf1">13 · Live feedback</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">dashboard · HUD state</text>
+    </g>
+    <g transform="translate(980,390)">
+      <rect width="160" height="64" rx="10" fill="#12161c" stroke="#2a323c"/>
+      <text x="80" y="26" text-anchor="middle" fill="#e8ecf1">14 · Result</text>
+      <text x="80" y="46" text-anchor="middle" font-size="10" fill="#9aa7b4">done only if verified</text>
+    </g>
+  </g>
+
+  <!-- forward arrows top row -->
+  <g stroke="#4a5561" stroke-width="1.3" fill="none">
+    <path d="M220 142 h70" marker-end="url(#a)"/><path d="M450 142 h70" marker-end="url(#a)"/>
+    <path d="M680 142 h70" marker-end="url(#a)"/><path d="M910 142 h70" marker-end="url(#a)"/>
+    <path d="M1060 174 v50 h-150" marker-end="url(#a)" transform="translate(0,0)"/>
+  </g>
+  <path d="M1060 174 v76" stroke="#4a5561" stroke-width="1.3" marker-end="url(#a)"/>
+  <g stroke="#4a5561" stroke-width="1.3" fill="none">
+    <path d="M750 282 h-70" marker-end="url(#a)"/><path d="M520 282 h-70" marker-end="url(#a)"/><path d="M290 282 h-70" marker-end="url(#a)"/>
+    <path d="M140 314 v76" marker-end="url(#a)"/>
+  </g>
+  <g stroke="#4a5561" stroke-width="1.3" fill="none">
+    <path d="M220 422 h70" marker-end="url(#a)"/><path d="M450 422 h70" marker-end="url(#a)"/><path d="M680 422 h70" marker-end="url(#a)"/><path d="M910 422 h70" marker-end="url(#a)"/>
+  </g>
+  <!-- reward loop back -->
+  <path d="M370 454 v86 h-260 v-86" stroke="#5ee6c5" stroke-width="1.3" fill="none" stroke-dasharray="5 4" marker-end="url(#ag)"/>
+  <text x="245" y="560" text-anchor="middle" font-size="11" fill="#5ee6c5">reward + update loop (real posterior / KRLS updates)</text>
+  <text x="1050" y="530" text-anchor="middle" font-size="10.5" fill="#5d6875">cancellation checked between stages</text>
+</svg>

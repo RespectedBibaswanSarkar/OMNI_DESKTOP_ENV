@@ -1,3 +1,5 @@
+See [architecture/overview.md](architecture/overview.md) for the current architecture documentation.
+
 # OMNI architecture
 
 The project is organized as a compact orchestrator with these responsibilities:

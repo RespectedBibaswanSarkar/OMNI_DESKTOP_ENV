@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Environment / secrets
+.env
+.env.*
+
+# Runtime data
+omni_data.db
+tmp/
+workspace/
+bench/results/
+research/results/hud_state.json
+
+# OS / editor
+.DS_Store
+*.swp

@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="640" fill="#0d1014"/>
+  <text x="600" y="34" text-anchor="middle" font-size="18" font-weight="650" fill="#e8ecf1">Local Model Center — Conceptual Wireframe</text>
+  <text x="600" y="54" text-anchor="middle" font-size="11" fill="#5d6875">explanatory mockup · roles are capability preferences, not benchmark claims</text>
+
+  <g transform="translate(90,84)">
+    <rect width="1020" height="500" rx="16" fill="#12161c" stroke="#2a323c"/>
+    <rect x="1" y="1" width="1018" height="40" rx="15" fill="#141a21"/>
+    <text x="20" y="26" font-size="12" font-weight="600" fill="#e8ecf1">Local Model Center</text>
+    <rect x="720" y="10" width="150" height="22" rx="11" fill="#182028" stroke="#5ee6c5" stroke-opacity="0.4"/>
+    <text x="795" y="25" text-anchor="middle" font-size="10" fill="#5ee6c5">auto-routing: on</text>
+    <rect x="884" y="10" width="110" height="22" rx="11" fill="#182028" stroke="#2a323c"/>
+    <text x="939" y="25" text-anchor="middle" font-size="10" fill="#9aa7b4">Refresh</text>
+
+    <g font-size="10" fill="#5d6875" letter-spacing="0.5">
+      <text x="40" y="72">MODEL</text><text x="250" y="72">ROLE</text><text x="560" y="72">PARAMS</text><text x="640" y="72">CONTEXT</text><text x="730" y="72">CAPABILITIES</text><text x="870" y="72">LATENCY (OBS.)</text><text x="960" y="72">STATUS</text>
+    </g>
+    <line x1="20" y1="80" x2="1000" y2="80" stroke="#2a323c"/>
+
+    <g font-size="10.5">
+      <circle cx="34" cy="98" r="4.5" fill="#5ee6c5"/><text x="50" y="102" fill="#e8ecf1" font-weight="600">qwen3:4b</text>
+      <text x="250" y="102" fill="#9aa7b4">reasoning · planning · orchestration</text>
+      <text x="560" y="102" fill="#9aa7b4">4B</text><text x="640" y="102" fill="#9aa7b4">40,960</text><text x="730" y="102" fill="#9aa7b4">completion · tools · thinking</text><text x="870" y="102" fill="#9aa7b4">12.4 s</text><text x="960" y="102" fill="#5ee6c5">loaded</text>
+      <line x1="20" y1="114" x2="1000" y2="114" stroke="#1b212a"/>
+
+      <circle cx="34" cy="130" r="4.5" fill="#232a32"/><text x="50" y="134" fill="#e8ecf1">qwen3:1.7b</text>
+      <text x="250" y="134" fill="#9aa7b4">fast intent classification</text>
+      <text x="560" y="134" fill="#9aa7b4">2B</text><text x="640" y="134" fill="#9aa7b4">40,960</text><text x="730" y="134" fill="#9aa7b4">completion · tools · thinking</text><text x="870" y="134" fill="#9aa7b4">3.1 s</text><text x="960" y="134" fill="#9aa7b4">on demand</text>
+      <line x1="20" y1="146" x2="1000" y2="146" stroke="#1b212a"/>
+
+      <circle cx="34" cy="162" r="4.5" fill="#232a32"/><text x="50" y="166" fill="#e8ecf1">qwen2.5-coder:3b</text>
+      <text x="250" y="166" fill="#9aa7b4">code generation · code analysis</text>
+      <text x="560" y="166" fill="#9aa7b4">3.1B</text><text x="640" y="166" fill="#9aa7b4">32,768</text><text x="730" y="166" fill="#9aa7b4">completion · tools · insert</text><text x="870" y="166" fill="#9aa7b4">—</text><text x="960" y="166" fill="#9aa7b4">on demand</text>
+      <line x1="20" y1="178" x2="1000" y2="178" stroke="#1b212a"/>
+
+      <circle cx="34" cy="194" r="4.5" fill="#232a32"/><text x="50" y="198" fill="#e8ecf1">phi4-mini:latest</text>
+      <text x="250" y="198" fill="#9aa7b4">reasoning · analytical tasks</text>
+      <text x="560" y="198" fill="#9aa7b4">3.8B</text><text x="640" y="198" fill="#9aa7b4">16,384</text><text x="730" y="198" fill="#9aa7b4">completion</text><text x="870" y="198" fill="#9aa7b4">—</text><text x="960" y="198" fill="#9aa7b4">on demand</text>
+      <line x1="20" y1="210" x2="1000" y2="210" stroke="#1b212a"/>
+
+      <circle cx="34" cy="226" r="4.5" fill="#232a32"/><text x="50" y="230" fill="#e8ecf1">gemma3:4b</text>
+      <text x="250" y="230" fill="#9aa7b4">general · image-capable workflows</text>
+      <text x="560" y="230" fill="#9aa7b4">4.3B</text><text x="640" y="230" fill="#9aa7b4">131,072</text><text x="730" y="230" fill="#9aa7b4">completion · thinking</text><text x="870" y="230" fill="#9aa7b4">51.2 s (cold)</text><text x="960" y="230" fill="#5ee6c5">loaded</text>
+      <line x1="20" y1="242" x2="1000" y2="242" stroke="#1b212a"/>
+
+      <circle cx="34" cy="258" r="4.5" fill="#232a32"/><text x="50" y="262" fill="#e8ecf1">llama3.2:3b</text>
+      <text x="250" y="262" fill="#9aa7b4">general-purpose alternative</text>
+      <text x="560" y="262" fill="#9aa7b4">3.2B</text><text x="640" y="262" fill="#9aa7b4">131,072</text><text x="730" y="262" fill="#9aa7b4">completion · tools</text><text x="870" y="262" fill="#9aa7b4">—</text><text x="960" y="262" fill="#9aa7b4">on demand</text>
+      <text x="50" y="282" font-size="8.5" fill="#5d6875">alias: llama3.2:latest (identical digest — deduplicated)</text>
+      <line x1="20" y1="292" x2="1000" y2="292" stroke="#1b212a"/>
+
+      <circle cx="34" cy="308" r="4.5" fill="#232a32"/><text x="50" y="312" fill="#e8ecf1">deepseek-r1:1.5b</text>
+      <text x="250" y="312" fill="#9aa7b4">lightweight reasoning comparison</text>
+      <text x="560" y="312" fill="#9aa7b4">1.8B</text><text x="640" y="312" fill="#9aa7b4">131,072</text><text x="730" y="312" fill="#9aa7b4">completion · tools · thinking</text><text x="870" y="312" fill="#9aa7b4">—</text><text x="960" y="312" fill="#9aa7b4">on demand</text>
+      <line x1="20" y1="324" x2="1000" y2="324" stroke="#1b212a"/>
+
+      <circle cx="34" cy="340" r="4.5" fill="#232a32"/><text x="50" y="344" fill="#e8ecf1">nomic-embed-text:latest</text>
+      <text x="250" y="344" fill="#9aa7b4">embeddings · semantic retrieval</text>
+      <text x="560" y="344" fill="#9aa7b4">137M</text><text x="640" y="344" fill="#9aa7b4">2,048</text><text x="730" y="344" fill="#9aa7b4">embedding</text><text x="870" y="344" fill="#9aa7b4">—</text><text x="960" y="344" fill="#9aa7b4">on demand</text>
+    </g>
+
+    <rect x="20" y="380" width="480" height="100" rx="10" fill="#141a21" stroke="#2a323c"/>
+    <text x="14" y="22" transform="translate(0,380)" font-size="10.5" fill="#6ea8ff" letter-spacing="1">SELECTION LOGIC</text>
+    <g font-size="9.5" fill="#9aa7b4" transform="translate(34,420)">
+      <text x="0" y="0">1 · task kind from IARS agent (code / planning / intent / general)</text>
+      <text x="0" y="18">2 · preference list per kind → capability match</text>
+      <text x="0" y="36">3 · observed latency orders the fallback chain</text>
+      <text x="0" y="54">4 · manual pin overrides auto-routing</text>
+    </g>
+    <rect x="520" y="380" width="480" height="100" rx="10" fill="#141a21" stroke="#2a323c"/>
+    <text x="534" y="402" font-size="10.5" fill="#5d6875" letter-spacing="1">AVAILABILITY HANDLING</text>
+    <g font-size="9.5" fill="#9aa7b4">
+      <text x="534" y="424">Ollama unreachable → status shown, no fabricated results</text>
+      <text x="534" y="442">model error → next entry of the fallback chain</text>
+      <text x="534" y="460">offline mode → deterministic mock, labelled "simulated"</text>
+      <text x="534" y="478">embedding models never chosen for text generation</text>
+    </g>
+  </g>
+</svg>

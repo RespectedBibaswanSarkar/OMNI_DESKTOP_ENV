@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <defs>
+    <linearGradient id="acc" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#5ee6c5"/><stop offset="1" stop-color="#6ea8ff"/></linearGradient>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#4a5561"/></marker>
+    <marker id="arwG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5ee6c5"/></marker>
+  </defs>
+  <rect width="1200" height="720" fill="#0d1014"/>
+  <text x="600" y="42" text-anchor="middle" font-size="21" font-weight="650" fill="#e8ecf1" letter-spacing="1">OMNI System Architecture</text>
+  <text x="600" y="64" text-anchor="middle" font-size="12" fill="#5d6875">explanatory graphic — mirrors the implemented module structure</text>
+
+  <!-- Layer 1: user / surfaces -->
+  <g transform="translate(40,96)">
+    <rect x="0" y="0" width="1120" height="96" rx="14" fill="#12161c" stroke="#2a323c"/>
+    <text x="16" y="24" font-size="11" fill="#5d6875" letter-spacing="2">INTERACTION SURFACES</text>
+    <rect x="16" y="36" width="200" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="116" y="56" text-anchor="middle" font-size="12.5" fill="#e8ecf1">User task / CLI</text>
+    <text x="116" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">omni.main · commands</text>
+    <rect x="236" y="36" width="250" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="361" y="56" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Web dashboard (7 views)</text>
+    <text x="361" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">FastAPI + vanilla JS · operational</text>
+    <rect x="506" y="36" width="250" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="631" y="56" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Quickshell HUD</text>
+    <text x="631" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">state.json feed · operational</text>
+    <rect x="776" y="36" width="160" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="856" y="56" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Voice / gateway</text>
+    <text x="856" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">experimental</text>
+    <rect x="956" y="36" width="148" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="1030" y="56" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Model gateway</text>
+    <text x="1030" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">hosted routing · opt-in</text>
+  </g>
+
+  <path d="M600 192 v30" stroke="#4a5561" stroke-width="1.4" marker-end="url(#arw)"/>
+
+  <!-- Layer 2: API + pipeline -->
+  <g transform="translate(40,232)">
+    <rect x="0" y="0" width="540" height="196" rx="14" fill="#12161c" stroke="#2a323c"/>
+    <text x="16" y="24" font-size="11" fill="#5d6875" letter-spacing="2">ORCHESTRATION CORE (omni/api · omni/pipeline)</text>
+    <rect x="16" y="36" width="240" height="44" rx="8" fill="#182028" stroke="#6ea8ff" stroke-opacity="0.6"/>
+    <text x="136" y="56" text-anchor="middle" font-size="12.5" fill="#6ea8ff">FastAPI backend</text>
+    <text x="136" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">/api/state · /api/tasks · /api/models</text>
+    <rect x="276" y="36" width="248" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="400" y="56" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Background task worker</text>
+    <text x="400" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">queue · cancel · duplicate guard</text>
+    <rect x="16" y="96" width="508" height="80" rx="8" fill="#141a21" stroke="#2a323c"/>
+    <text x="270" y="122" text-anchor="middle" font-size="12" fill="#e8ecf1">Task pipeline (omni/pipeline.py)</text>
+    <g font-size="10.5" fill="#9aa7b4" text-anchor="middle">
+      <rect x="30" y="136" width="106" height="28" rx="6" fill="#182028"/><text x="83" y="154">1 context</text>
+      <rect x="146" y="136" width="106" height="28" rx="6" fill="#182028"/><text x="199" y="154">2 intent</text>
+      <rect x="262" y="136" width="106" height="28" rx="6" fill="#182028"/><text x="315" y="154">3 modules</text>
+      <rect x="378" y="136" width="130" height="28" rx="6" fill="#182028"/><text x="443" y="154">4 model · 5 schedule</text>
+    </g>
+    <text x="270" y="180" text-anchor="middle" font-size="10" fill="#5d6875">→ 6 generate · 7 execute · 8 verify · 9 reward · 10 update</text>
+  </g>
+
+  <!-- Algorithms column -->
+  <g transform="translate(600,232)">
+    <rect x="0" y="0" width="280" height="196" rx="14" fill="#12161c" stroke="#5ee6c5" stroke-opacity="0.4"/>
+    <text x="16" y="24" font-size="11" fill="#5ee6c5" letter-spacing="2">RESEARCH ALGORITHMS</text>
+    <rect x="16" y="36" width="248" height="44" rx="8" fill="#182028" stroke="#5ee6c5" stroke-opacity="0.5"/>
+    <text x="140" y="56" text-anchor="middle" font-size="12.5" fill="#5ee6c5">IARS — intent routing</text>
+    <text x="140" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">Bayesian bandit · Thompson sampling</text>
+    <rect x="16" y="92" width="248" height="44" rx="8" fill="#182028" stroke="#5ee6c5" stroke-opacity="0.5"/>
+    <text x="140" y="112" text-anchor="middle" font-size="12.5" fill="#5ee6c5">AMPL — module selection</text>
+    <text x="140" y="128" text-anchor="middle" font-size="10" fill="#9aa7b4">memory-budgeted greedy coverage</text>
+    <rect x="16" y="148" width="248" height="44" rx="8" fill="#182028" stroke="#ffb454" stroke-opacity="0.5"/>
+    <text x="140" y="168" text-anchor="middle" font-size="12.5" fill="#ffb454">KRLS — adaptive scheduler</text>
+    <text x="140" y="184" text-anchor="middle" font-size="10" fill="#9aa7b4">kernel RLS · per-action reward models</text>
+  </g>
+
+  <!-- Model infra -->
+  <g transform="translate(900,232)">
+    <rect x="0" y="0" width="260" height="196" rx="14" fill="#12161c" stroke="#6ea8ff" stroke-opacity="0.4"/>
+    <text x="16" y="24" font-size="11" fill="#6ea8ff" letter-spacing="2">LOCAL INFERENCE</text>
+    <rect x="16" y="36" width="228" height="44" rx="8" fill="#182028" stroke="#6ea8ff" stroke-opacity="0.5"/>
+    <text x="130" y="56" text-anchor="middle" font-size="12.5" fill="#6ea8ff">LocalModelCenter</text>
+    <text x="130" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">discovery · roles · fallback chain</text>
+    <rect x="16" y="92" width="228" height="44" rx="8" fill="#182028" stroke="#6ea8ff" stroke-opacity="0.5"/>
+    <text x="130" y="112" text-anchor="middle" font-size="12.5" fill="#6ea8ff">LLM client + disk cache</text>
+    <text x="130" y="128" text-anchor="middle" font-size="10" fill="#9aa7b4">SHA-256 keyed · mock replay</text>
+    <rect x="16" y="148" width="228" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="130" y="168" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Ollama service</text>
+    <text x="130" y="184" text-anchor="middle" font-size="10" fill="#9aa7b4">127.0.0.1:11434 · no cloud keys</text>
+  </g>
+
+  <path d="M310 428 v30" stroke="#4a5561" stroke-width="1.4" marker-end="url(#arw)"/>
+  <path d="M740 428 v30" stroke="#5ee6c5" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#arwG)"/>
+  <path d="M1030 428 v30" stroke="#6ea8ff" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#arwG)"/>
+
+  <!-- Layer 3: execution + context -->
+  <g transform="translate(40,470)">
+    <rect x="0" y="0" width="540" height="150" rx="14" fill="#12161c" stroke="#2a323c"/>
+    <text x="16" y="24" font-size="11" fill="#5d6875" letter-spacing="2">SAFE EXECUTION &amp; VERIFICATION</text>
+    <rect x="16" y="36" width="248" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="140" y="56" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Isolated task workspace</text>
+    <text x="140" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">path containment · allowlisted actions</text>
+    <rect x="276" y="36" width="248" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="400" y="56" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Verification engine</text>
+    <text x="400" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">file · JSON · content · process · pytest</text>
+    <rect x="16" y="92" width="508" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="270" y="112" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Telemetry (JSONL, mock-tagged) · SQLite store</text>
+    <text x="270" y="128" text-anchor="middle" font-size="10" fill="#9aa7b4">only verified outcomes count as success</text>
+  </g>
+
+  <g transform="translate(600,470)">
+    <rect x="0" y="0" width="280" height="150" rx="14" fill="#12161c" stroke="#2a323c"/>
+    <text x="16" y="24" font-size="11" fill="#5d6875" letter-spacing="2">DESKTOP CONTEXT</text>
+    <rect x="16" y="36" width="248" height="34" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="140" y="58" text-anchor="middle" font-size="12" fill="#e8ecf1">Hyprland + AT-SPI collector</text>
+    <rect x="16" y="80" width="248" height="30" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="140" y="100" text-anchor="middle" font-size="11.5" fill="#9aa7b4">198-dim bounded feature map φ</text>
+    <rect x="16" y="118" width="248" height="20" rx="6" fill="#141a21"/>
+    <text x="140" y="133" text-anchor="middle" font-size="10" fill="#5d6875">keystroke content never persisted</text>
+  </g>
+
+  <g transform="translate(900,470)">
+    <rect x="0" y="0" width="260" height="150" rx="14" fill="#12161c" stroke="#ffb454" stroke-opacity="0.4"/>
+    <text x="16" y="24" font-size="11" fill="#ffb454" letter-spacing="2">SYSTEM ACTUATION</text>
+    <rect x="16" y="36" width="228" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="130" y="56" text-anchor="middle" font-size="12" fill="#e8ecf1">cgroup v2 actuator</text>
+    <text x="130" y="72" text-anchor="middle" font-size="10" fill="#9aa7b4">dry-run by default · --apply opt-in</text>
+    <rect x="16" y="92" width="228" height="44" rx="8" fill="#182028" stroke="#2a323c"/>
+    <text x="130" y="112" text-anchor="middle" font-size="12" fill="#e8ecf1">Desktop action registry</text>
+    <text x="130" y="128" text-anchor="middle" font-size="10" fill="#9aa7b4">confirm tiers · kill switch restore()</text>
+  </g>
+
+  <!-- reward loop -->
+  <path d="M310 620 v40 h1030 v-44" stroke="#5ee6c5" stroke-width="1.4" fill="none" marker-end="url(#arwG)"/>
+  <text x="830" y="672" text-anchor="middle" font-size="11.5" fill="#5ee6c5">verified outcome → reward → IARS + KRLS adaptive updates</text>
+</svg>

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <rect width="1200" height="640" fill="#0d1014"/>
+  <text x="600" y="34" text-anchor="middle" font-size="18" font-weight="650" fill="#e8ecf1">Algorithm Observatory — Conceptual Wireframe</text>
+  <text x="600" y="54" text-anchor="middle" font-size="11" fill="#5d6875">explanatory mockup · every value shown is read from live algorithm state</text>
+
+  <g transform="translate(90,84)">
+    <rect width="1020" height="500" rx="16" fill="#12161c" stroke="#2a323c"/>
+
+    <!-- IARS -->
+    <g transform="translate(20,20)">
+      <rect width="320" height="230" rx="10" fill="#141a21" stroke="#5ee6c5" stroke-opacity="0.4"/>
+      <text x="14" y="24" font-size="10.5" fill="#5ee6c5" letter-spacing="1">IARS · INTENT ROUTING</text>
+      <g font-size="10" fill="#9aa7b4">
+        <text x="14" y="48">posterior updates</text><text x="306" y="48" text-anchor="end" fill="#5ee6c5">6</text>
+        <text x="14" y="66" font-size="9" fill="#5d6875">Thompson-sampled utility θ·φ − λcost − λload</text>
+      </g>
+      <g font-size="9.5">
+        <text x="14" y="92" fill="#9aa7b4">File Operator</text><rect x="110" y="84" width="180" height="6" rx="3" fill="#232a32"/><rect x="110" y="84" width="52" height="6" rx="3" fill="#5ee6c5"/><text x="300" y="92" text-anchor="end" fill="#9aa7b4">1</text>
+        <text x="14" y="114" fill="#9aa7b4">Document Editor</text><rect x="110" y="106" width="180" height="6" rx="3" fill="#232a32"/><rect x="110" y="106" width="96" height="6" rx="3" fill="#5ee6c5"/><text x="300" y="114" text-anchor="end" fill="#9aa7b4">2</text>
+        <text x="14" y="136" fill="#9aa7b4">Terminal Developer</text><rect x="110" y="128" width="180" height="6" rx="3" fill="#232a32"/><rect x="110" y="128" width="20" height="6" rx="3" fill="#5ee6c5"/><text x="300" y="136" text-anchor="end" fill="#9aa7b4">0</text>
+        <text x="14" y="158" fill="#9aa7b4">Planner</text><rect x="110" y="150" width="180" height="6" rx="3" fill="#232a32"/><rect x="110" y="150" width="140" height="6" rx="3" fill="#5ee6c5"/><text x="300" y="158" text-anchor="end" fill="#9aa7b4">3</text>
+      </g>
+      <rect x="14" y="180" width="292" height="34" rx="7" fill="#1b212a"/>
+      <text x="24" y="196" font-size="9" fill="#5d6875">last decision · agent planner · conf 0.71</text>
+      <text x="24" y="208" font-size="9" fill="#5d6875">explored: no · verification: single</text>
+    </g>
+
+    <!-- AMPL -->
+    <g transform="translate(350,20)">
+      <rect width="320" height="230" rx="10" fill="#141a21" stroke="#5ee6c5" stroke-opacity="0.4"/>
+      <text x="14" y="24" font-size="10.5" fill="#5ee6c5" letter-spacing="1">AMPL · MODULE SELECTION</text>
+      <g font-size="10" fill="#9aa7b4">
+        <text x="14" y="48">resident modules</text><text x="306" y="48" text-anchor="end" fill="#c7d0da">3 of 11</text>
+        <text x="14" y="66">footprint</text><text x="306" y="66" text-anchor="end" fill="#c7d0da">96 MB · 412M params</text>
+        <text x="14" y="84">budget (real pressure)</text><text x="306" y="84" text-anchor="end" fill="#c7d0da">231 MB</text>
+        <text x="14" y="102">objective</text><text x="306" y="102" text-anchor="end" fill="#c7d0da">0.83 · best single 0.61</text>
+      </g>
+      <g font-size="9.5" fill="#9aa7b4">
+        <text x="14" y="130">resident:</text>
+        <rect x="14" y="140" width="86" height="20" rx="6" fill="#1b212a"/><text x="57" y="154" text-anchor="middle" font-size="8.5">lora-reason</text>
+        <rect x="106" y="140" width="72" height="20" rx="6" fill="#1b212a"/><text x="142" y="154" text-anchor="middle" font-size="8.5">tool-files</text>
+        <rect x="184" y="140" width="80" height="20" rx="6" fill="#1b212a"/><text x="224" y="154" text-anchor="middle" font-size="8.5">tool-shell</text>
+      </g>
+      <rect x="14" y="180" width="292" height="34" rx="7" fill="#1b212a"/>
+      <text x="24" y="196" font-size="9" fill="#5d6875">greedy coverage vs best-single baseline</text>
+      <text x="24" y="208" font-size="9" fill="#5d6875">capability-miss boost · eviction by utility</text>
+    </g>
+
+    <!-- KRLS -->
+    <g transform="translate(680,20)">
+      <rect width="320" height="230" rx="10" fill="#141a21" stroke="#ffb454" stroke-opacity="0.4"/>
+      <text x="14" y="24" font-size="10.5" fill="#ffb454" letter-spacing="1">KRLS · ADAPTIVE SCHEDULER</text>
+      <g font-size="10" fill="#9aa7b4">
+        <text x="14" y="48">reward updates</text><text x="306" y="48" text-anchor="end" fill="#ffb454">4</text>
+        <text x="14" y="66">policy</text><text x="306" y="66" text-anchor="end" fill="#c7d0da">krls (was heuristic-prior)</text>
+        <text x="14" y="84">features</text><text x="306" y="84" text-anchor="end" fill="#c7d0da">load · psi · mem · focus</text>
+      </g>
+      <g font-size="9.5">
+        <text x="14" y="110" fill="#9aa7b4">boost</text><rect x="80" y="102" width="200" height="6" rx="3" fill="#232a32"/><rect x="80" y="102" width="120" height="6" rx="3" fill="#ffb454"/>
+        <text x="14" y="132" fill="#9aa7b4">balanced</text><rect x="80" y="124" width="200" height="6" rx="3" fill="#232a32"/><rect x="80" y="124" width="80" height="6" rx="3" fill="#6ea8ff"/>
+        <text x="14" y="154" fill="#9aa7b4">throttle</text><rect x="80" y="146" width="200" height="6" rx="3" fill="#232a32"/><rect x="80" y="146" width="40" height="6" rx="3" fill="#6ea8ff"/>
+      </g>
+      <rect x="14" y="180" width="292" height="34" rx="7" fill="#1b212a"/>
+      <text x="24" y="196" font-size="9" fill="#5d6875">cgroup v2 actuation · dry-run by default</text>
+      <text x="24" y="208" font-size="9" fill="#5d6875">dictionary: 12 centers · budget 48</text>
+    </g>
+
+    <!-- history + reward chart -->
+    <g transform="translate(20,270)">
+      <rect width="640" height="210" rx="10" fill="#141a21" stroke="#2a323c"/>
+      <text x="14" y="24" font-size="10.5" fill="#9aa7b4" letter-spacing="1">DECISION HISTORY (last 40 · real records)</text>
+      <g font-size="9.5" fill="#9aa7b4">
+        <text x="14" y="48">…organize milestones · planner · r=+1.20 · gemma3:4b</text>
+        <text x="14" y="68">…literature notes · document-editor · r=+1.20 · qwen3:4b</text>
+        <text x="14" y="88">…python project · dev-terminal · r=+1.18 · qwen2.5-coder</text>
+        <text x="14" y="108">…report draft · document-editor · r=+1.20 · phi4-mini</text>
+      </g>
+      <text x="14" y="140" font-size="10" fill="#9aa7b4" letter-spacing="1">OBSERVED REWARD TRAIL</text>
+      <polyline points="14,190 60,182 106,186 152,176 198,180 244,170 290,174 336,164 382,168 428,158 474,162 520,152 566,156 612,146"
+        fill="none" stroke="#5ee6c5" stroke-width="1.8"/>
+      <line x1="14" y1="176" x2="612" y2="176" stroke="#2a323c"/>
+      <text x="14" y="204" font-size="8.5" fill="#5d6875">plotted from recorded task rewards — no synthetic series</text>
+    </g>
+
+    <!-- ablation -->
+    <g transform="translate(680,270)">
+      <rect width="320" height="210" rx="10" fill="#141a21" stroke="#2a323c"/>
+      <text x="14" y="24" font-size="10.5" fill="#9aa7b4" letter-spacing="1">ABLATION STATE</text>
+      <g font-size="10" fill="#9aa7b4">
+        <text x="14" y="50">IARS</text><text x="306" y="50" text-anchor="end" fill="#5ee6c5">enabled</text>
+        <text x="14" y="72">AMPL</text><text x="306" y="72" text-anchor="end" fill="#5ee6c5">enabled</text>
+        <text x="14" y="94">KRLS</text><text x="306" y="94" text-anchor="end" fill="#5ee6c5">enabled</text>
+        <text x="14" y="116">adaptive updates</text><text x="306" y="116" text-anchor="end" fill="#5ee6c5">on</text>
+      </g>
+      <rect x="14" y="140" width="292" height="54" rx="7" fill="#1b212a"/>
+      <text x="24" y="160" font-size="9" fill="#5d6875">disabling a component removes it from the decision</text>
+      <text x="24" y="176" font-size="9" fill="#5d6875">path entirely — ablations are real, not cosmetic</text>
+    </g>
+  </g>
+</svg>
