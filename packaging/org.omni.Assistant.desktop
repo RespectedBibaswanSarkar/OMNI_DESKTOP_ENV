@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OMNI
+GenericName=Desktop Assistant
+Comment=Tell your desktop what to do in plain language
+Exec=omni-ui
+Icon=system-search-symbolic
+Terminal=false
+Categories=Utility;
+StartupNotify=true

@@ -1,0 +1,7 @@
+{
+  "uuid": "omni-bridge@omni.local",
+  "name": "OMNI Bridge",
+  "description": "Exports window list, focus, close, move and workspace switching on the session bus (org.omni.Bridge) so the OMNI assistant can control the GNOME desktop on Wayland.",
+  "shell-version": ["48", "49", "50"],
+  "version": 1
+}

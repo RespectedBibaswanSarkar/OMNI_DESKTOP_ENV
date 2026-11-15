@@ -52,6 +52,13 @@ DEFAULT_AGENTS: tuple[AgentSpec, ...] = (
         cost=0.30,
     ),
     AgentSpec(
+        id="desktop-control",
+        name="Desktop Controller",
+        description="Open and launch applications, switch workspaces, focus, move and close windows, open links, type text, press keys, change volume, brightness and Wi-Fi, and control media playback on the desktop.",
+        tags=("open", "launch", "start", "switch", "focus", "close", "workspace", "window", "volume", "brightness", "wifi", "media", "play", "pause", "app", "application", "desktop", "type", "press", "key", "music", "mute"),
+        cost=0.08,
+    ),
+    AgentSpec(
         id="planner",
         name="Multi-step Planner",
         description="Decompose an ambiguous cross-app goal into ordered steps, choose tools and hand off sub-tasks. Useful for multi-step workflows and long-running requests.",

@@ -1,0 +1,13 @@
+[Unit]
+Description=OMNI daemon (API + planning/execution pipeline)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/omni/venv/bin/omnid
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

@@ -32,6 +32,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "gen_timeout_s": 90,
     "safe_execution": True,
     "offline_mode": False,
+    "auto_approve_reversible": False,   # True: launch/focus/workspace/volume run without a prompt
+    "apply_scheduler": False,           # True: KRLS actually writes cgroup weights (kill switch on exit)
+    "notify_results": True,             # desktop notification when a task finishes
+    "speak_results": False,             # speak the result aloud
 }
 
 
@@ -69,6 +73,10 @@ async def lifespan(app: FastAPI):
         offline=offline,
         gen_timeout=float(app.state.settings.get("gen_timeout_s", 90)),
         max_gen_tokens=int(app.state.settings.get("max_gen_tokens", 512)),
+        auto_approve_reversible=bool(app.state.settings.get("auto_approve_reversible", False)),
+        apply_scheduler=bool(app.state.settings.get("apply_scheduler", False)),
+        notify_results=bool(app.state.settings.get("notify_results", True)),
+        speak_results=bool(app.state.settings.get("speak_results", False)),
     )
     app.state.pipeline.start()
     thread = threading.Thread(target=app.state.model_center.refresh, name="omni-model-refresh", daemon=True)
@@ -139,6 +147,55 @@ def submit_task(payload: dict[str, Any]) -> dict[str, Any]:
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+@app.post("/api/tasks/{task_id}/confirm")
+def confirm_task(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Approve or deny the desktop action a task is waiting on (HUD / native app buttons)."""
+    ok = app.state.pipeline.resolve_confirmation(task_id, bool(payload.get("approve", False)))
+    if not ok:
+        raise HTTPException(status_code=409, detail="Task is not awaiting confirmation")
+    return {"task_id": task_id, "approved": bool(payload.get("approve", False))}
+
+
+# ---------------------------------------------------- desktop (direct, no LLM)
+@app.get("/api/desktop/apps")
+def desktop_apps() -> dict[str, Any]:
+    names = app.state.pipeline.desktop.apps.names()
+    return {"count": len(names), "apps": names}
+
+
+@app.get("/api/desktop/windows")
+def desktop_windows() -> dict[str, Any]:
+    desk = app.state.pipeline.desktop
+    return {"windows": desk.clients(), "backend": desk.backend.status()}
+
+
+@app.get("/api/desktop/status")
+def desktop_status() -> dict[str, Any]:
+    """Is window control wired up? (GNOME: is the OMNI Bridge extension reachable?)"""
+    desk = app.state.pipeline.desktop
+    return {**desk.backend.status(), "apps_indexed": len(desk.apps.entries()),
+            "learned_plans": len(app.state.pipeline.plans.entries), "routines": app.state.pipeline.plans.names()}
+
+
+@app.post("/api/desktop/run")
+def desktop_run(payload: dict[str, Any]) -> dict[str, Any]:
+    """Test one registry action directly, bypassing planning: isolates registry bugs from LLM bugs.
+
+    Body: {"action": "workspace.switch", "args": {"workspace": 2}, "confirm": true}
+    """
+    desk = app.state.pipeline.desktop
+    try:
+        prepared = desk.prepare(str(payload.get("action", "")), payload.get("args") or {})
+        if prepared.confirmation_required:
+            if not payload.get("confirm"):
+                return {"confirmation_required": True, "tier": prepared.tier}
+            prepared = desk.confirm(prepared.confirmation_token)
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    verified = desk.verify(prepared.action, payload.get("args") or {}) if prepared.success else None
+    return {"success": prepared.success, "output": prepared.output, "tier": prepared.tier, "verified": verified}
 
 
 @app.get("/api/tasks")
@@ -219,6 +276,17 @@ def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
     pipe: OmniPipeline = app.state.pipeline
     pipe.offline = offline
     pipe.llm.backend = "mock" if offline else "ollama"
+    pipe.multimodel.offline = offline
+    if "auto_approve_reversible" in payload:
+        pipe.auto_approve_reversible = bool(payload["auto_approve_reversible"])
+    for flag in ("notify_results", "speak_results"):
+        if flag in payload:
+            setattr(pipe, flag, bool(payload[flag]))
+    if "apply_scheduler" in payload:
+        was = pipe.apply_scheduler
+        pipe.apply_scheduler = bool(payload["apply_scheduler"])
+        if was and not pipe.apply_scheduler:
+            pipe.actuator.restore()          # turning actuation off restores original cgroup weights
     return {"settings": app.state.settings}
 
 

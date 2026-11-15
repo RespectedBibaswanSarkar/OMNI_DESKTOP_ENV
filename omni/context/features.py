@@ -89,8 +89,19 @@ class ContextSnapshot:
         }
 
 
-def build_features(snapshot: ContextSnapshot, action_counts: dict[str, int] | None = None, now: float | None = None) -> np.ndarray:
-    """Map a context snapshot to the fixed IARS feature vector phi(z)."""
+def build_features(
+    snapshot: ContextSnapshot,
+    action_counts: dict[str, int] | None = None,
+    now: float | None = None,
+    goal: str = "",
+    goal_weight: float = 2.0,
+) -> np.ndarray:
+    """Map a context snapshot (and, optionally, the user's goal) to phi(z, g).
+
+    The goal shares the lexical segment with the agent priors, so an explicit
+    request like "open firefox" aligns with the desktop-control prior even when
+    the focused window is a terminal.  Without a goal the behaviour is unchanged.
+    """
     phi = np.zeros(FEATURE_DIM, dtype=np.float64)
     phi[0] = 1.0
     phi[1] = math.log1p(max(snapshot.focused_age_s, 0.0))
@@ -109,7 +120,13 @@ def build_features(snapshot: ContextSnapshot, action_counts: dict[str, int] | No
     # Only app class + title: ubiquitous AT-SPI role names ("application",
     # "frame") would otherwise leak into every context and skew agent priors.
     text = " ".join([snapshot.app_class or "", snapshot.title or ""])
-    phi[base : base + _TEXT_BUCKETS] = text_embedding(text)
+    seg = text_embedding(text)
+    if goal and goal.strip():
+        seg = seg + float(goal_weight) * text_embedding(goal)
+        norm = np.linalg.norm(seg)
+        if norm:
+            seg = seg / norm
+    phi[base : base + _TEXT_BUCKETS] = seg
     base += _TEXT_BUCKETS
 
     role_vec = np.zeros(_ROLE_BUCKETS, dtype=np.float64)

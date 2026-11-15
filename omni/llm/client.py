@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -12,6 +13,14 @@ from typing import Any
 
 from omni.llm.embeddings import HashEmbedder
 from omni.telemetry import JsonlLogger, mock_enabled
+
+
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_think(text: str) -> str:
+    """Remove <think>...</think> traces (qwen3 / deepseek-r1) so JSON parsing sees only the answer."""
+    return _THINK.sub("", text).strip()
 
 
 @dataclass(frozen=True)
@@ -94,12 +103,31 @@ class LLMClient:
         tmp.write_text(json.dumps(entry, sort_keys=True), encoding="utf-8")
         tmp.replace(path)
 
-    def complete(self, prompt: str, params: dict[str, Any] | None = None, model: str | None = None) -> LLMResult:
-        params = params or {}
+    def complete(
+        self,
+        prompt: str,
+        params: dict[str, Any] | None = None,
+        model: str | None = None,
+        *,
+        fmt: Any = None,                  # "json" or a JSON-schema dict (Ollama structured output)
+        think: bool | None = None,        # False disables <think> traces on reasoning models
+        images: list[str] | None = None,  # base64 PNG/JPEG for vision models
+        keep_alive: str | int | None = None,
+        use_cache: bool = True,           # desktop planning must NOT replay stale plans
+    ) -> LLMResult:
+        params = dict(params or {})
+        if fmt is not None:
+            params["__format"] = fmt
+        if think is not None:
+            params["__think"] = think
+        if images:
+            params["__images"] = images
+        if keep_alive is not None:
+            params["__keep_alive"] = keep_alive
         model_name = model or self.model or ("mock-model" if self.is_mock else "")
         key = self._key("complete", {"prompt": prompt, "params": params, "model": model_name})
         started = time.time()
-        cached = self._read(key)
+        cached = self._read(key) if use_cache else None
         if cached is not None:
             result = LLMResult(text=cached["text"], model=cached.get("model", model_name), backend=cached.get("backend", self.backend), mock=bool(cached.get("mock", False)), cached=True, elapsed_s=time.time() - started, cache_key=key)
             self.logger.log("llm_complete", **result.metadata())
@@ -110,7 +138,8 @@ class LLMClient:
         else:
             text = self._http_complete(prompt, params, model_name)
             entry = {"text": text, "model": model_name, "backend": self.backend, "mock": False}
-        self._write(key, entry)
+        if use_cache:
+            self._write(key, entry)
         result = LLMResult(text=text, model=model_name, backend=entry["backend"], mock=bool(entry["mock"]), cached=False, elapsed_s=time.time() - started, cache_key=key)
         self.logger.log("llm_complete", **result.metadata())
         return result
@@ -140,12 +169,29 @@ class LLMClient:
             raise RuntimeError("OMNI_LLM_MODEL is required for a non-mock backend")
         if self.backend == "ollama":
             url = os.environ.get("OMNI_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/") + "/api/generate"
-            body = {"model": model, "prompt": prompt, "stream": False, "options": params}
-            data = self._post(url, body)
-            return str(data.get("response", ""))
+            options = {k: v for k, v in params.items() if not k.startswith("__")}
+            body: dict[str, Any] = {"model": model, "prompt": prompt, "stream": False, "options": options}
+            if "__format" in params:
+                body["format"] = params["__format"]
+            if "__think" in params:
+                body["think"] = params["__think"]
+            if "__images" in params:
+                body["images"] = params["__images"]
+            if "__keep_alive" in params:
+                body["keep_alive"] = params["__keep_alive"]
+            try:
+                data = self._post(url, body)
+            except RuntimeError as exc:
+                # models without a thinking mode may reject the `think` field: retry once without it
+                if "think" in body and "HTTP 400" in str(exc):
+                    body.pop("think")
+                    data = self._post(url, body)
+                else:
+                    raise
+            return _strip_think(str(data.get("response", "")))
         if self.backend in {"openai", "openai-compatible"}:
             base = os.environ.get("OMNI_LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-            body = {"model": model, "messages": [{"role": "user", "content": prompt}], **params}
+            body = {"model": model, "messages": [{"role": "user", "content": prompt}], **{k: v for k, v in params.items() if not k.startswith("__")}}
             data = self._post(base + "/chat/completions", body, auth=True)
             return str(data["choices"][0]["message"]["content"])
         raise RuntimeError(f"Unknown LLM backend: {self.backend}")

@@ -12,6 +12,7 @@ stage; nothing is computed and discarded.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -22,15 +23,20 @@ from pathlib import Path
 from typing import Any
 
 from omni.context.features import build_features
-from omni.context.hyprland import HyprlandContextCollector
-from omni.desktop.actions import DesktopActionRegistry
+from omni.context.factory import make_collector
+from omni.desktop.actions import ActionResult, DesktopActionRegistry
+from omni.desktop.rules import parse_desktop_intent
 from omni.hud.state import write_hud_state
 from omni.llm.client import LLMClient
 from omni.local_models import LocalModelCenter
 from omni.modules.ampl import AMPL, ModuleResidency
 from omni.modules.descriptor import AppDescriptor
 from omni.modules.memory import measure_memory
+from omni.multimodel import MultiModelRuntime
+from omni.routines import PlanMemory
 from omni.routing.iars import IARS
+from omni.routing.model_bandit import ModelBandit
+from omni.routing.verifier import LLMVerifier
 from omni.scheduler.actuator import CgroupV2Actuator
 from omni.scheduler.context import collect_features
 from omni.scheduler.policy import ACTIONS_BY_ID, KRLSPolicy
@@ -44,10 +50,12 @@ AGENT_KIND: dict[str, str] = {
     "browser-ops": "general",
     "visual-ui": "reasoning",
     "planner": "planning",
+    "desktop-control": "desktop",
 }
 # Static keyword fallback used ONLY when IARS is disabled (ablation) — the
 # disabled algorithm must genuinely stop influencing routing.
 STATIC_KEYWORD_AGENT: list[tuple[tuple[str, ...], str]] = [
+    (("open ", "launch", "workspace", "volume", "brightness", "wifi", "focus", "close "), "desktop-control"),
     (("code", "test", "pytest", "git", "python", "terminal"), "dev-terminal"),
     (("plan", "milestone", "workflow", "steps", "organize"), "planner"),
     (("document", "note", "markdown", "write", "report"), "document-editor"),
@@ -55,6 +63,9 @@ STATIC_KEYWORD_AGENT: list[tuple[tuple[str, ...], str]] = [
 ]
 
 GENERATION_ACTIONS = {"mkdir", "write_file", "write_json"}
+DESKTOP_PLAN_AGENTS = {"desktop-control", "planner", "visual-ui"}
+META_ACTIONS = {"reply", "routine.save"}      # handled by the pipeline itself, not the desktop registry
+MAX_PLAN_STEPS = 5
 
 
 @dataclass
@@ -77,6 +88,11 @@ class TaskRecord:
     error: str | None = None
     cancel_requested: bool = False
     finished: float | None = None
+    plan: list[dict[str, Any]] = field(default_factory=list)
+    observation: dict[str, Any] = field(default_factory=dict)
+    pending: dict[str, Any] = field(default_factory=dict)       # awaiting user confirmation
+    confirm_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    confirm_decision: bool | None = field(default=None, repr=False)
 
     def stage(self, name: str, status: str, **details: Any) -> dict[str, Any]:
         entry = {"name": name, "status": status, "at": round(time.time(), 3), **details}
@@ -99,6 +115,9 @@ class TaskRecord:
             "verification": self.verification,
             "reward": self.reward,
             "workspace": self.workspace,
+            "plan": self.plan,
+            "observation": self.observation,
+            "pending": self.pending,
             "error": self.error,
             "duration_s": round((self.finished or time.time()) - self.created, 3),
         }
@@ -150,6 +169,15 @@ class OmniPipeline:
         gen_timeout: float = 90.0,
         max_gen_tokens: int = 512,
         ablation: dict[str, bool] | None = None,
+        desktop: DesktopActionRegistry | None = None,
+        auto_approve_reversible: bool = False,
+        apply_scheduler: bool | None = None,
+        confirm_timeout: float = 120.0,
+        max_replans: int = 2,
+        vision_enabled: bool | None = None,
+        plan_memory: PlanMemory | None = None,
+        notify_results: bool = False,
+        speak_results: bool = False,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.isolated_root = self.workspace_root / "isolated"
@@ -170,11 +198,27 @@ class OmniPipeline:
         self.max_gen_tokens = int(max_gen_tokens)
         # Ablation switches: when False the component genuinely does not run
         # and cannot influence any downstream decision.
-        self.ablation = {"iars": True, "ampl": True, "krls": True, "adaptive": True}
+        self.ablation = {"iars": True, "ampl": True, "krls": True, "adaptive": True, "rules": True, "memory": True}
         if ablation:
             self.ablation.update(ablation)
-        self.collector = HyprlandContextCollector()
-        self.desktop = DesktopActionRegistry(self.workspace_root)
+        self.confirm_timeout = float(confirm_timeout)
+        self.desktop = desktop or DesktopActionRegistry(self.workspace_root, token_ttl=self.confirm_timeout + 30.0)
+        self.collector = make_collector(self.desktop.backend)
+        self.plans = plan_memory if plan_memory is not None else PlanMemory(self.workspace_root / ".omni" / "plans.json")
+        self.last_plan: list[dict[str, Any]] = []
+        self.notify_results = bool(notify_results)
+        self.speak_results = bool(speak_results)
+        self.auto_approve_reversible = bool(auto_approve_reversible)
+        self.apply_scheduler = (os.environ.get("OMNI_APPLY_SCHEDULER", "0") in {"1", "true", "yes"}
+                                if apply_scheduler is None else bool(apply_scheduler))
+        self.max_replans = max(0, int(max_replans))
+        self.vision_enabled = (os.environ.get("OMNI_VISION", "0") in {"1", "true", "yes"}
+                               if vision_enabled is None else bool(vision_enabled))
+        # Multi-model layer: role runtime + factored (agent, model) Thompson sampling.
+        self.multimodel = MultiModelRuntime(self.model_center, self.llm, offline=self.offline)
+        self.model_bandit = ModelBandit()
+        if iars is None and not self.offline:
+            self.iars.verifier = LLMVerifier(self.multimodel.ask_router)
         self.tasks: dict[str, TaskRecord] = {}
         self.history: list[TaskRecord] = []
         self.queue: "list[str]" = []
@@ -192,6 +236,11 @@ class OmniPipeline:
             self._thread.start()
 
     def stop(self, timeout: float = 3.0) -> None:
+        if self.apply_scheduler:
+            try:
+                self.actuator.restore()          # kill switch on shutdown
+            except Exception:  # noqa: BLE001
+                pass
         self._stop.set()
         self._wake.set()
         if self._thread is not None:
@@ -271,7 +320,7 @@ class OmniPipeline:
         memory = measure_memory()
         agent_id: str
         if self.ablation["iars"] and snapshot is not None:
-            phi = build_features(snapshot)
+            phi = build_features(snapshot, goal=record.goal)
             decision = self.iars.decide(phi, context_text=context_text)
             d = decision.as_dict()  # kept for debugging parity; record.iars below is the API view
             record.iars = {
@@ -304,21 +353,35 @@ class OmniPipeline:
             record.stage("ampl", "disabled")
         self._checkpoint(record)
 
-        # 4. Local model selection ---------------------------------------
+        # 4. Multi-model selection: capability ranking -> factored Thompson sampling ----
         task_kind = AGENT_KIND.get(agent_id, "general")
         preferred = None if self.model_center.auto_select else self.model_center.selected
         selection = self.model_center.select(task_kind, preferred=preferred)
         model_tag = selection["model"]
+        bandit_info: dict[str, Any] | None = None
+        if model_tag and preferred is None and len(selection["chain"]) > 1:
+            ranked = [t for t in selection["chain"] if "embed" not in t]
+            infos = self.model_center.models
+            bandit_info = self.model_bandit.select(
+                agent_id, ranked,
+                latency_s={t: infos[t].observed_latency_s for t in ranked if t in infos},
+                size_gb={t: infos[t].size_gb for t in ranked if t in infos},
+                latency_budget_s=self.gen_timeout,
+            )
+            model_tag = bandit_info["model"]
+            selection = {**selection, "chain": [model_tag] + [t for t in selection["chain"] if t != model_tag]}
         record.model = {
             "selected": model_tag,
             "reason": selection["reason"],
             "fallback_chain": selection["chain"],
             "task_kind": task_kind,
             "offline": self.offline or self.llm.is_mock,
+            "bandit": bandit_info,
         }
         if model_tag is None and not (self.offline or self.llm.is_mock):
             record.model["fallback_note"] = "no local model reachable; falling back to offline mode"
             self.offline = True
+            self.multimodel.offline = True
         record.stage("model", "done", model=model_tag, kind=task_kind)
         self._checkpoint(record)
 
@@ -326,7 +389,7 @@ class OmniPipeline:
         if self.ablation["krls"] and snapshot is not None:
             sched_features = collect_features(snapshot, memory)
             sched_decision = self.policy.decide(sched_features)
-            applied = self.actuator.apply(ACTIONS_BY_ID[sched_decision.action], dry_run=True)
+            applied = self.actuator.apply(ACTIONS_BY_ID[sched_decision.action], dry_run=not self.apply_scheduler)
             record.scheduler = {**sched_decision.as_dict(applied=applied), "actuator": self.actuator.status()}
             sched_features_record = sched_features
             record.stage("scheduler", "done", action=sched_decision.action, policy=sched_decision.policy)
@@ -337,46 +400,76 @@ class OmniPipeline:
             record.stage("scheduler", "disabled")
         self._checkpoint(record)
 
-        # 6. Plan generation (local model, bounded, structured JSON) ------
+        # 6. Observe + plan (rules fast-path -> multi-model JSON planner) --------------
         record.status = "generating"
         record.stage("generation", "active")
         self.inference_active = True
         try:
-            plan, gen_meta = self._generate_plan(record, model_tag, agent_id)
+            record.observation = self._observe(record, agent_id, snapshot)
+            plan, gen_meta = self._generate_plan(record, model_tag, agent_id, observation=record.observation)
         finally:
             self.inference_active = False
         record.generation = gen_meta
+        record.plan = plan
         record.stage("generation", "done", model=gen_meta["model"], structured=gen_meta["structured"],
-                     fallback=gen_meta["fallback"], elapsed_s=gen_meta["elapsed_s"])
+                     fallback=gen_meta["fallback"], elapsed_s=gen_meta["elapsed_s"], source=gen_meta.get("source"))
         self._checkpoint(record)
 
-        # 7. Safe execution in isolated workspace ------------------------
+        # 7+8. Execute -> independent verification -> bounded closed-loop replan ---------
         record.status = "executing"
         record.stage("execution", "active")
         exec_root = self.isolated_root / record.task_id
         exec_root.mkdir(parents=True, exist_ok=True)
         record.workspace = str(exec_root)
-        exec_results = self._execute_plan(plan, exec_root)
-        executed = sum(1 for r in exec_results if r["success"])
+        ledger: list[dict[str, Any]] = []
+        steps_now = plan
+        attempt = 0
+        while True:
+            results = self._execute_plan(steps_now, exec_root, record)
+            ledger.extend({"step": st, "result": rs, "superseded": False} for st, rs in zip(steps_now, results))
+            record.status = "verifying"
+            record.stage("verification", "active", attempt=attempt)
+            active = [e for e in ledger if not e["superseded"]]
+            verif = self._verify([e["step"] for e in active], exec_root, [e["result"] for e in active], goal=record.goal)
+            if verif["passed"] or attempt >= self.max_replans or not self.multimodel.live:
+                break
+            failing = [e for e in active if e["step"]["action"] in self.desktop.ACTIONS and not e["result"].get("verified", e["result"]["success"])]
+            if not failing:
+                break
+            feedback = "; ".join(f"{e['step']['action']} {e['result']['path']} -> {e['result']['detail']}" for e in failing)[:600]
+            for e in failing:
+                e["superseded"] = True
+            attempt += 1
+            record.status = "executing"
+            record.stage("replan", "active", attempt=attempt, feedback=feedback)
+            self.inference_active = True
+            try:
+                record.observation = self._observe(record, agent_id, None)
+                steps_now, meta2 = self._generate_plan(record, model_tag, agent_id, observation=record.observation, feedback=feedback)
+            finally:
+                self.inference_active = False
+            if meta2.get("fallback") or not steps_now:
+                break
+            record.plan = record.plan + steps_now
+        active = [e for e in ledger if not e["superseded"]]
+        executed = sum(1 for e in active if e["result"]["success"])
         record.execution = {
             "root": str(exec_root),
-            "steps": exec_results,
+            "steps": [dict(e["result"], superseded=e["superseded"]) for e in ledger],
             "executed": executed,
-            "total": len(exec_results),
+            "total": len(active),
+            "replans": attempt,
         }
-        record.stage("execution", "done", executed=executed, total=len(exec_results))
+        exec_results = [e["result"] for e in active]
+        record.stage("execution", "done", executed=executed, total=len(active), replans=attempt)
         self._checkpoint(record)
-
-        # 8. Independent verification ------------------------------------
-        record.status = "verifying"
-        record.stage("verification", "active")
-        verif = self._verify(plan, exec_root, exec_results)
         record.verification = verif
         passed = bool(verif["passed"])
         record.stage("verification", "passed" if passed else "failed",
                      checks=verif["checks"], total=verif["total"])
         record.result_text = self._summarise(record)
         record.status = "done" if passed else "failed"
+        self._learn(record, active, passed)
 
         # 9. Reward + adaptive updates ------------------------------------
         latency = time.time() - started
@@ -409,9 +502,36 @@ class OmniPipeline:
             scheduler_action=record.scheduler.get("action"),
         )
         self._publish_hud(record)
+        self._announce(record)
         record.finished = time.time()
         record.status = record.status if record.status in {"done", "failed"} else "done"
         return record.as_dict()
+
+    # ---------------------------------------------------------------- learning
+    def _learn(self, record: TaskRecord, active: list[dict[str, Any]], passed: bool) -> None:
+        real = [e["step"] for e in active if e["step"]["action"] not in META_ACTIONS]
+        source = record.generation.get("source")
+        if passed and real:
+            self.last_plan = real
+            if self.ablation.get("memory", True) and source in {"llm", "rules", "memory"} and not record.generation.get("fallback"):
+                self.plans.remember(record.goal, real, key=record.generation.get("memory_key"))
+        elif not passed and source == "memory" and record.generation.get("memory_key"):
+            self.plans.penalize(record.generation["memory_key"])      # stale plan: forget it, re-plan next time
+
+    def _announce(self, record: TaskRecord) -> None:
+        """Jarvis-style feedback: a desktop notification and, optionally, speech."""
+        if not (self.notify_results or self.speak_results) or record.status not in {"done", "failed"}:
+            return
+        replies = [r["detail"] for r in record.execution.get("steps", []) if r["action"] == "reply"]
+        text = replies[0] if replies else (record.generation.get("summary") or record.goal)
+        text = str(text)[:200]
+        try:
+            if self.notify_results:
+                self.desktop.execute("notify.send", {"title": "OMNI " + ("done" if record.status == "done" else "could not finish"), "body": text})
+            if self.speak_results:
+                self.desktop.execute("speech.say", {"text": text})
+        except Exception:  # noqa: BLE001 - feedback must never break a task
+            pass
 
     # ------------------------------------------------------------ helpers
     def _checkpoint(self, record: TaskRecord) -> None:
@@ -422,8 +542,69 @@ class OmniPipeline:
     def iars_updates(self) -> int:
         return sum(model.n_updates for model in self.iars.models.values())
 
-    def _generate_plan(self, record: TaskRecord, model_tag: str | None, agent_id: str) -> tuple[list[dict[str, str]], dict[str, Any]]:
-        prompt = (
+    # ------------------------------------------------------------ observation
+    def _observe(self, record: TaskRecord, agent_id: str, snapshot) -> dict[str, Any]:  # noqa: ANN001
+        """Structured view of the desktop fed to the planner (and used for replans)."""
+        obs: dict[str, Any] = {"windows": [], "focused": None, "screen": None,
+                               "backend": self.desktop.backend.name}
+        try:
+            obs["windows"] = self.desktop.clients()[:12]
+            active = self.desktop.backend.active_window()
+            if active:
+                obs["focused"] = {"class": active["class"], "title": active["title"][:80], "workspace": active["workspace"]}
+        except Exception:  # noqa: BLE001 - observation is best effort
+            pass
+        # AMPL decides whether the vision module is resident; only then is the vision model called.
+        resident = set(record.ampl.get("resident", []))
+        if self.vision_enabled and "vision-lora" in resident and self.multimodel.live:
+            obs["screen"] = self.multimodel.describe_screen(record.goal)
+        return obs
+
+    def _app_hints(self, goal: str, limit: int = 14) -> list[str]:
+        words = set(re.findall(r"[a-z0-9]+", goal.lower()))
+        try:
+            entries = self.desktop.apps.entries()
+        except Exception:  # noqa: BLE001
+            return []
+        hits = [e.name for e in entries if words & e.tokens()]
+        rest = [e.name for e in entries if e.name not in hits]
+        return (hits + rest)[:limit]
+
+    def _plan_schema(self) -> dict[str, Any]:
+        actions = sorted(set(self.desktop.ACTIONS) | GENERATION_ACTIONS | META_ACTIONS)
+        return {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "steps": {"type": "array", "maxItems": MAX_PLAN_STEPS, "items": {
+                    "type": "object",
+                    "properties": {"action": {"type": "string", "enum": actions},
+                                   "args": {"type": "object"}, "path": {"type": "string"}, "content": {"type": "string"}},
+                    "required": ["action"]}},
+            },
+            "required": ["steps"],
+        }
+
+    def _desktop_prompt(self, record: TaskRecord, observation: dict[str, Any] | None, feedback: str | None) -> str:
+        obs = observation or {}
+        actions = "\n".join(f"- {a['name']} {a['args']}: {a['description']}" for a in self.desktop.describe())
+        windows = "; ".join(f"[{w['workspace']}] {w['class']}: {w['title'][:40]}" for w in obs.get("windows", [])) or "none"
+        extra = f"\nScreen: {obs['screen']}" if obs.get("screen") else ""
+        fb = f"\nPrevious attempt failed: {feedback}. Fix it using only the allowed actions." if feedback else ""
+        return (
+            "You are OMNI, an agent controlling a Linux Hyprland desktop. Turn the goal into 1-5 steps.\n"
+            f"Allowed actions:\n{actions}\n"
+            "File steps use {\"action\": \"write_file\", \"path\": \"rel/path\", \"content\": \"...\"} (mkdir/write_file/write_json).\n"
+            "If the user only asks a question or no action is needed, answer with one step {\"action\": \"reply\", \"args\": {\"text\": \"...\"}}.\n"
+            "Prefer reading state first (system.info, window.list) instead of guessing. Never invent app names: use the installed apps below.\n"
+            f"Installed apps (sample): {', '.join(self._app_hints(record.goal))}\n"
+            f"Desktop: {obs.get('backend', '?')}. Open windows: {windows}\nFocused: {obs.get('focused')}{extra}{fb}\n"
+            f"Goal: {record.goal}\n"
+            'Return ONLY JSON: {"summary": "...", "steps": [{"action": "app.launch", "args": {"app": "Firefox"}}]}'
+        )
+
+    def _file_prompt(self, record: TaskRecord) -> str:
+        return (
             "You are the OMNI desktop assistant. Produce a JSON plan executed in an isolated sandbox.\n"
             f"User goal: {record.goal}\n"
             "Return ONLY a JSON object, no prose, exactly this shape:\n"
@@ -432,72 +613,199 @@ class OmniPipeline:
             "Rules: 2-5 steps; paths are relative, no '>'; write_json content must be a JSON string; "
             "keep each file under 1500 characters."
         )
-        params = {"num_predict": self.max_gen_tokens, "temperature": 0.3}
-        started = time.time()
-        structured = False
-        fallback = False
-        result = None
-        try:
-            result = self.llm.complete(prompt, params=params, model=model_tag)
-            text = result.text
-            elapsed = time.time() - started
-            if model_tag:
-                self.model_center.record_result(model_tag, elapsed, True)
-        except Exception as exc:  # noqa: BLE001 - model fallback handled below
-            text = ""
-            elapsed = time.time() - started
-            if model_tag:
-                self.model_center.record_result(model_tag, elapsed, False)
-            # try the rest of the fallback chain once
-            chain = [t for t in record.model.get("fallback_chain", []) if t != model_tag]
-            for alt in chain[:2]:
+
+    def _sanitize_steps(self, raw_steps: Any) -> list[dict[str, Any]]:
+        """Validate model output: file steps by path containment, desktop steps by the registry."""
+        steps: list[dict[str, Any]] = []
+        for step in (raw_steps if isinstance(raw_steps, list) else [])[:MAX_PLAN_STEPS]:
+            if not isinstance(step, dict):
+                continue
+            action = str(step.get("action", ""))
+            if action in META_ACTIONS:
+                args = step.get("args") if isinstance(step.get("args"), dict) else {}
+                if action == "reply":
+                    text = str(args.get("text", "")).strip()
+                    if text:
+                        steps.append({"action": "reply", "args": {"text": text[:600]}})
+                else:
+                    name = str(args.get("name", "")).strip()
+                    if re.fullmatch(r"[\w][\w \-]{0,39}", name):
+                        steps.append({"action": "routine.save", "args": {"name": name}})
+                continue
+            if action in self.desktop.ACTIONS:
+                args = step.get("args") if isinstance(step.get("args"), dict) else {}
                 try:
-                    result = self.llm.complete(prompt, params=params, model=alt)
-                    text, model_tag = result.text, alt
-                    self.model_center.record_result(alt, time.time() - started, True)
-                    break
-                except Exception:  # noqa: BLE001
+                    self.desktop._validate(action, dict(args))
+                except ValueError:
                     continue
-        meta: dict[str, Any] = {
-            "model": model_tag or "mock",
-            "mock": self.llm.is_mock,
-            "cached": bool(result.cached) if result is not None else False,
-            "elapsed_s": round(elapsed, 3),
-        }
+                steps.append({"action": action, "args": dict(args)})
+                continue
+            if action not in GENERATION_ACTIONS:
+                continue
+            path = str(step.get("path", "")).strip().lstrip("/")
+            if not path or ".." in Path(path).parts or path.startswith(("/", "~")):
+                continue
+            content = str(step.get("content", ""))
+            if action == "write_json":
+                try:
+                    content = json.dumps(json.loads(content), indent=2)
+                except json.JSONDecodeError:
+                    continue
+            steps.append({"action": action, "path": path, "content": content[:1500]})
+        return steps
+
+    def _generate_plan(
+        self,
+        record: TaskRecord,
+        model_tag: str | None,
+        agent_id: str,
+        observation: dict[str, Any] | None = None,
+        feedback: str | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        desktop_mode = agent_id in DESKTOP_PLAN_AGENTS or self.multimodel.live
+        started = time.time()
+        meta: dict[str, Any] = {"model": model_tag or "mock", "mock": self.llm.is_mock, "cached": False,
+                                "elapsed_s": 0.0, "source": "llm"}
+        # (a) adaptive memory: replay a previously VERIFIED plan for a near-identical goal
+        if not feedback and self.ablation.get("memory", True):
+            hit = self.plans.match(record.goal, validate=self._sanitize_steps)
+            if hit:
+                meta.update(model="memory", source="memory", structured=True, fallback=False, memory_key=hit["key"],
+                            similarity=hit["similarity"], elapsed_s=round(time.time() - started, 3),
+                            summary=f"replayed learned plan for '{hit['goal']}'")
+                return hit["steps"], meta
+        # (b) bootstrap fast path for unambiguous commands (can be disabled: ablation rules=False)
+        if not feedback and self.ablation.get("rules", True):
+            ruled = parse_desktop_intent(record.goal)
+            steps = self._sanitize_steps(ruled) if ruled else []
+            if ruled and len(steps) == len(ruled):
+                meta.update(model="rules", source="rules", structured=True, fallback=False,
+                            elapsed_s=round(time.time() - started, 3), summary="rule-parsed desktop command")
+                return steps, meta
+        # (c) multi-model JSON planner
+        prompt = self._desktop_prompt(record, observation, feedback) if desktop_mode else self._file_prompt(record)
+        params = {"num_predict": self.max_gen_tokens, "temperature": 0.2 if desktop_mode else 0.3}
+        text, result = "", None
+        candidates = [model_tag] + [t for t in record.model.get("fallback_chain", []) if t != model_tag][:2]
+        for tag in candidates:
+            try:
+                result = self.llm.complete(
+                    prompt, params=params, model=tag,
+                    fmt=self._plan_schema() if desktop_mode and not self.llm.is_mock else None,
+                    think=False if not self.llm.is_mock else None,
+                    use_cache=not desktop_mode,          # a desktop plan is only valid for *this* desktop state
+                    keep_alive="10m" if tag else None,
+                )
+                text, model_tag = result.text, tag
+                if tag:
+                    self.model_center.record_result(tag, time.time() - started, True)
+                break
+            except Exception:  # noqa: BLE001 - try the next model in the chain
+                if tag:
+                    self.model_center.record_result(tag, time.time() - started, False)
+                continue
+        elapsed = time.time() - started
+        meta.update(model=model_tag or "mock", mock=self.llm.is_mock,
+                    cached=bool(result.cached) if result is not None else False, elapsed_s=round(elapsed, 3))
         parsed = extract_json(text or "")
-        steps: list[dict[str, str]] = []
-        if parsed:
-            raw_steps = parsed.get("steps", [])
-            for step in raw_steps[:5]:
-                if not isinstance(step, dict):
-                    continue
-                action = str(step.get("action", ""))
-                if action not in GENERATION_ACTIONS:
-                    continue
-                path = str(step.get("path", "")).strip().lstrip("/")
-                if not path or ".." in Path(path).parts or path.startswith(("/", "~")):
-                    continue
-                content = str(step.get("content", ""))
-                if action == "write_json":
-                    try:
-                        content = json.dumps(json.loads(content), indent=2)
-                    except json.JSONDecodeError:
-                        continue
-                steps.append({"action": action, "path": path, "content": content[:1500]})
-            if steps:
-                structured = True
-                meta["summary"] = str(parsed.get("summary", ""))[:300]
+        steps = self._sanitize_steps(parsed.get("steps", [])) if parsed else []
+        structured = bool(steps)
+        if structured:
+            meta["summary"] = str(parsed.get("summary", ""))[:300]
+            # coder role: hand code-file bodies to the code model
+            if self.multimodel.live:
+                for st in steps:
+                    if st["action"] == "write_file":
+                        better = self.multimodel.refine_code(record.goal, st["path"], st.get("content", ""))
+                        if better:
+                            st["content"] = better
+                            meta["coder_used"] = True
+        fallback = False
         if not steps:
             fallback = True
-            steps = [dict(s, path=s["path"]) for s in FALLBACK_STEPS]
+            if desktop_mode:
+                steps = []     # never fake a desktop action: an honest empty plan fails verification
+            else:
+                steps = [dict(s, path=s["path"]) for s in FALLBACK_STEPS]
         meta["structured"] = structured
         meta["fallback"] = fallback
         return steps, meta
 
-    def _execute_plan(self, steps: list[dict[str, str]], root: Path) -> list[dict[str, Any]]:
+    # ------------------------------------------------------------ execution
+    def resolve_confirmation(self, task_id: str, approve: bool) -> bool:
+        record = self.tasks.get(task_id)
+        if record is None or not record.pending:
+            return False
+        record.confirm_decision = bool(approve)
+        record.confirm_event.set()
+        return True
+
+    def _await_confirmation(self, record: TaskRecord, action: str, args: dict, prepared: ActionResult) -> ActionResult:
+        record.pending = {"token_id": prepared.confirmation_token[:8], "action": action, "args": args,
+                          "tier": prepared.tier, "expires_in_s": self.confirm_timeout}
+        record.confirm_event.clear()
+        record.confirm_decision = None
+        record.status = "awaiting_confirmation"
+        record.stage("confirmation", "waiting", action=action, tier=prepared.tier)
+        deadline = time.monotonic() + self.confirm_timeout
+        while time.monotonic() < deadline and not record.cancel_requested:
+            if record.confirm_event.wait(timeout=0.2):
+                break
+        decision = record.confirm_decision
+        record.pending = {}
+        record.status = "executing"
+        if record.cancel_requested:
+            self.desktop.deny(prepared.confirmation_token)
+            return ActionResult(action, prepared.tier, False, "cancelled while awaiting confirmation")
+        if decision is None:
+            self.desktop.deny(prepared.confirmation_token)
+            record.stage("confirmation", "timeout", action=action)
+            return ActionResult(action, prepared.tier, False, "confirmation timed out")
+        if not decision:
+            self.desktop.deny(prepared.confirmation_token)
+            record.stage("confirmation", "denied", action=action)
+            return ActionResult(action, prepared.tier, False, "denied by user")
+        record.stage("confirmation", "approved", action=action)
+        return self.desktop.confirm(prepared.confirmation_token)
+
+    def _execute_desktop(self, step: dict[str, Any], record: TaskRecord | None) -> dict[str, Any]:
+        action, args = step["action"], dict(step.get("args", {}))
+        label = f"{action} {json.dumps(args, ensure_ascii=False)}"
+        try:
+            prepared = self.desktop.prepare(action, args)
+            if prepared.confirmation_required:
+                if prepared.tier == "reversible" and self.auto_approve_reversible:
+                    result = self.desktop.confirm(prepared.confirmation_token)
+                elif record is not None:
+                    result = self._await_confirmation(record, action, args, prepared)
+                else:
+                    self.desktop.deny(prepared.confirmation_token)
+                    result = ActionResult(action, prepared.tier, False, "confirmation required (no interactive session)")
+            else:
+                result = prepared
+        except (ValueError, PermissionError) as exc:
+            return {"action": action, "path": label, "success": False, "detail": str(exc), "kind": "desktop", "tier": "?"}
+        return {"action": action, "path": label, "success": result.success, "detail": result.output[:400],
+                "kind": "desktop", "tier": result.tier}
+
+    def _execute_plan(self, steps: list[dict[str, Any]], root: Path, record: TaskRecord | None = None) -> list[dict[str, Any]]:
         results = []
         for step in steps:
-            action, rel, content = step["action"], step["path"], step.get("content", "")
+            action = step["action"]
+            if action == "reply":
+                text = step["args"]["text"]
+                results.append({"action": "reply", "path": "", "success": True, "detail": text, "kind": "meta", "verified": True})
+                continue
+            if action == "routine.save":
+                name = step["args"]["name"]
+                ok = self.plans.save_named(name, list(self.last_plan))
+                results.append({"action": action, "path": name, "success": ok, "kind": "meta", "verified": ok,
+                                "detail": f"saved routine '{name}' ({len(self.last_plan)} steps)" if ok else "nothing to save yet: run a task first"})
+                continue
+            if action in self.desktop.ACTIONS:
+                results.append(self._execute_desktop(step, record))
+                continue
+            rel, content = step["path"], step.get("content", "")
             path = (root / rel).resolve()
             ok = False
             detail = ""
@@ -520,9 +828,27 @@ class OmniPipeline:
             results.append({"action": action, "path": rel, "success": ok, "detail": detail})
         return results
 
-    def _verify(self, steps: list[dict[str, str]], root: Path, exec_results: list[dict[str, Any]]) -> dict[str, Any]:
+    def _verify(self, steps: list[dict[str, Any]], root: Path, exec_results: list[dict[str, Any]], goal: str = "") -> dict[str, Any]:
         checks = []
+        unverified: list[str] = []
         for step, run in zip(steps, exec_results):
+            if step["action"] in META_ACTIONS:
+                checks.append({"path": run["path"] or "reply", "check": "executed", "passed": bool(run["success"])})
+                continue
+            if step["action"] in self.desktop.ACTIONS:
+                if not run["success"]:
+                    run["verified"] = False
+                    checks.append({"path": run["path"], "check": "execution", "passed": False, "detail": run["detail"]})
+                    continue
+                post = self.desktop.verify(step["action"], dict(step.get("args", {})))
+                if post is None:
+                    unverified.append(run["path"])
+                    run["verified"] = True
+                    checks.append({"path": run["path"], "check": "executed", "passed": True, "note": "no deterministic post-condition"})
+                else:
+                    run["verified"] = bool(post["passed"])
+                    checks.append({"path": run["path"], "check": "post_condition", "passed": bool(post["passed"]), "detail": post["detail"]})
+                continue
             if not run["success"]:
                 checks.append({"path": step["path"], "check": "execution", "passed": False})
                 continue
@@ -539,6 +865,12 @@ class OmniPipeline:
                 content = path.read_text(encoding="utf-8")
                 checks.append({"path": step["path"], "check": "non_empty_content",
                                "passed": len(content.strip()) > 10})
+        # critic role: semantic check only where no deterministic post-condition exists
+        if unverified and goal and self.multimodel.live:
+            critique = self.multimodel.critique(goal, "; ".join(unverified)[:500])
+            if critique is not None and "satisfied" in critique:
+                checks.append({"path": "(goal)", "check": "critic", "passed": bool(critique["satisfied"]),
+                               "detail": str(critique.get("reason", ""))[:160]})
         total = len(checks)
         passed_count = sum(1 for c in checks if c["passed"])
         return {"checks": checks, "passed": total > 0 and passed_count == total,
@@ -570,6 +902,11 @@ class OmniPipeline:
             self.iars.observe(phi, agent_id, reward)
             record.reward["iars_updated"] = True
             record.reward["iars_updates_total"] = self.iars_updates()
+        # Model-level posterior: (agent, model actually used) receives the same reward.
+        used = record.generation.get("model")
+        if used and used != "mock":
+            self.model_bandit.observe(agent_id, used, reward)
+            record.reward["model_updated"] = used
         # KRLS update: the executed action receives the task outcome reward.
         if sched_features is not None and sched_decision is not None:
             self.policy.update(sched_features, sched_decision.action, reward)
@@ -645,7 +982,8 @@ class OmniPipeline:
             }
             for t in self.history[-40:]
         ]
-        return {"iars": iars_state, "ampl": ampl_state, "krls": krls_state, "history": history}
+        return {"iars": iars_state, "ampl": ampl_state, "krls": krls_state,
+                "model_bandit": self.model_bandit.as_dict(), "history": history}
 
     def workload(self) -> dict[str, Any]:
         with self.queue_lock:

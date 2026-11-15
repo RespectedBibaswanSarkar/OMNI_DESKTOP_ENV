@@ -40,6 +40,11 @@ KIND_PREFERENCE: dict[str, tuple[str, ...]] = {
     "embedding": ("nomic-embed-text:latest",),
     "reasoning-compare": ("deepseek-r1:1.5b", "phi4-mini", "qwen3:4b"),
     "general": ("gemma3:4b", "llama3.2:3b", "qwen3:4b", "qwen3:1.7b", "phi4-mini"),
+    # multi-model roles (see omni/multimodel.py)
+    "desktop": ("qwen3:4b", "phi4-mini", "llama3.2:3b", "gemma3:4b", "qwen3:1.7b"),
+    "router": ("qwen3:1.7b", "llama3.2:3b", "phi4-mini"),
+    "vision": ("gemma3:4b",),
+    "critic": ("phi4-mini", "deepseek-r1:1.5b", "qwen3:4b"),
 }
 
 
@@ -227,6 +232,24 @@ class LocalModelCenter:
                 continue
             return {"model": tag, "reason": reason, "chain": chain}
         return {"model": None, "reason": "No text-capable model available", "chain": chain}
+
+    def unload(self, tag: str) -> bool:
+        """Ask Ollama to evict a model from RAM now (keep_alive=0)."""
+        import urllib.request as _rq
+        body = json.dumps({"model": tag, "keep_alive": 0}).encode("utf-8")
+        request = _rq.Request(self.url + "/api/generate", data=body, headers={"Content-Type": "application/json"})
+        try:
+            with _rq.urlopen(request, timeout=self.timeout):
+                pass
+        except Exception:  # noqa: BLE001 - best effort
+            return False
+        info = self.models.get(tag)
+        if info:
+            info.loaded = False
+        return True
+
+    def loaded_tags(self) -> list[str]:
+        return [m.tag for m in self.models.values() if m.loaded]
 
     def record_result(self, tag: str, elapsed_s: float, ok: bool) -> None:
         info = self.models.get(tag)

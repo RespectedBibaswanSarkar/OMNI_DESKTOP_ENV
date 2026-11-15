@@ -39,7 +39,7 @@ class TestPipeline:
     def test_iars_influences_model_kind(self, pipeline):
         record = _run(pipeline, "Create a research project structure with notes.")
         assert record.iars["agent"]
-        assert record.model["task_kind"] in set(["general", "reasoning", "code", "planning"])
+        assert record.model["task_kind"] in set(["general", "reasoning", "code", "planning", "desktop"])
         assert record.model["fallback_chain"], "fallback chain must be recorded"
 
     def test_reward_drives_real_updates(self, pipeline):

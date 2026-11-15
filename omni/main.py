@@ -55,14 +55,87 @@ def _launch_dashboard(host: str, port: int) -> int:
     return 0
 
 
+def _coerce(value: str):
+    low = value.lower()
+    if low in {"true", "false"}:
+        return low == "true"
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _desktop(args) -> int:
+    """Exercise the DesktopActionRegistry directly (no planner, no model).
+
+    First sanity check for any desktop problem:  python3 -m omni.main desktop run workspace.switch workspace=2 --yes
+    """
+    from omni.desktop.actions import DesktopActionRegistry
+    registry = DesktopActionRegistry(settings.workspace_root)
+    if args.desktop_cmd == "apps":
+        print("\n".join(registry.apps.names()) or "no applications discovered")
+        return 0
+    if args.desktop_cmd == "windows":
+        print(registry.execute("window.list").output)
+        return 0
+    if args.desktop_cmd == "status":
+        print(registry.backend.status())
+        return 0
+    params = {k: _coerce(v) for k, v in (kv.split("=", 1) for kv in args.params)}
+    result = registry.prepare(args.action, params)
+    if result.confirmation_required:
+        if not (args.yes or input(f"Run {args.action} {params}? [y/N] ").strip().lower().startswith("y")):
+            print("not confirmed")
+            return 1
+        result = registry.confirm(result.confirmation_token)
+    print(("OK   " if result.success else "FAIL ") + result.output)
+    check = registry.verify(args.action, params) if result.success else None
+    if check is not None:
+        print(("VERIFIED " if check["passed"] else "NOT VERIFIED ") + check["detail"])
+    return 0 if result.success and (check is None or check["passed"]) else 1
+
+
+def _ablate(args) -> int:
+    from omni.ablation import format_table, run_bench
+    goals = [g.strip() for g in Path(args.goals).read_text(encoding="utf-8").splitlines() if g.strip() and not g.startswith("#")]
+    print(format_table(run_bench(goals, repeat=args.repeat, live=args.live)))
+    return 0
+
+
+def _ask(args) -> int:
+    """Submit a goal to the running daemon and follow it, prompting for confirmations."""
+    import time as _time
+    from omni.native.client import TERMINAL, OmniClient, OmniUnavailable
+    client = OmniClient(args.url)
+    try:
+        task_id = client.submit(args.goal)["task_id"]
+        seen = 0
+        while True:
+            task = client.task(task_id)
+            for stage in task["stages"][seen:]:
+                print(f"  {stage['name']}: {stage['status']}")
+            seen = len(task["stages"])
+            if task.get("pending"):
+                pend = task["pending"]
+                ok = args.yes or input(f"Allow {pend['action']} {pend.get('args')} [{pend.get('tier')}]? [y/N] ").strip().lower().startswith("y")
+                client.confirm(task_id, ok)
+            if task["status"] in TERMINAL:
+                print(task.get("result_text") or task.get("error") or "")
+                return 0 if task["status"] == "done" else 1
+            _time.sleep(0.4)
+    except OmniUnavailable as exc:
+        print(f"OMNI: {exc}\nStart the daemon:  python3 -m omni.main daemon   (or systemctl --user start omnid)", file=sys.stderr)
+        return 2
+
+
 def _self_test() -> int:
     import pytest
     return pytest.main(["-q", "tests"]) if Path("tests").exists() else 1
 
 
 def _inspect_context() -> int:
-    from omni.context.hyprland import HyprlandContextCollector
-    collector = HyprlandContextCollector()
+    from omni.context.factory import make_collector
+    collector = make_collector()
     snapshot = collector.snapshot()
     print(json.dumps({"context": snapshot.as_dict(), "privacy": snapshot.privacy_summary()}, indent=2))
     return 0
@@ -104,7 +177,7 @@ def _route(args: argparse.Namespace) -> int:
 
 
 def _schedule(args: argparse.Namespace) -> int:
-    from omni.context.hyprland import HyprlandContextCollector
+    from omni.context.factory import make_collector
     from omni.scheduler.actuator import CgroupV2Actuator
     from omni.scheduler.service import SchedulerService
     from omni.scheduler.simulator import simulate, simulate_all
@@ -116,7 +189,7 @@ def _schedule(args: argparse.Namespace) -> int:
         payload = simulate_all(steps=args.steps) if args.simulate == "all" else simulate(args.simulate, steps=args.steps)
         print(json.dumps(payload, indent=2))
         return 0
-    collector = HyprlandContextCollector()
+    collector = make_collector()
     snapshot = collector.snapshot()
     service = SchedulerService(apply=args.apply)
     print(json.dumps(service.step(snapshot), indent=2))
@@ -229,6 +302,26 @@ def main(argv: list[str] | None = None) -> int:
     bench.add_argument("--workspaces", default=None)
     bench.add_argument("--report", action="store_true", help="aggregate results and write report/figures")
     subparsers.add_parser("hud")
+    daemon = subparsers.add_parser("daemon", help="run omnid (API + pipeline worker) in the foreground")
+    daemon.add_argument("--host", default="127.0.0.1")
+    daemon.add_argument("--port", type=int, default=settings.port)
+    ask = subparsers.add_parser("ask", help="submit a goal to the running daemon")
+    ask.add_argument("goal")
+    ask.add_argument("--url", default=None)
+    ask.add_argument("--yes", action="store_true", help="approve confirmations automatically")
+    ablate = subparsers.add_parser("ablate", help="ablation run over a goals file (one goal per line): success, latency, learning effect")
+    ablate.add_argument("goals")
+    ablate.add_argument("--repeat", type=int, default=2)
+    ablate.add_argument("--live", action="store_true")
+    desk = subparsers.add_parser("desktop", help="test desktop registry actions directly")
+    desk_sub = desk.add_subparsers(dest="desktop_cmd", required=True)
+    desk_sub.add_parser("apps")
+    desk_sub.add_parser("windows")
+    desk_sub.add_parser("status")
+    desk_run = desk_sub.add_parser("run")
+    desk_run.add_argument("action")
+    desk_run.add_argument("params", nargs="*", help="key=value pairs, e.g. workspace=2")
+    desk_run.add_argument("--yes", action="store_true")
 
     args = parser.parse_args(argv)
     if args.command == "status":
@@ -249,11 +342,24 @@ def main(argv: list[str] | None = None) -> int:
         return _route(args)
     if args.command == "schedule":
         return _schedule(args)
-    if args.command == "bench":
-        return _bench(args)
+    if args.command == "ablate":
+        return _ablate(args)
     if args.command == "hud":
         return _launch_hud()
+    if args.command == "daemon":
+        return _launch_dashboard(args.host, args.port)
+    if args.command == "ask":
+        return _ask(args)
+    if args.command == "desktop":
+        return _desktop(args)
+    if args.command == "bench":
+        return _bench(args)
     return 1
+
+
+def daemon_entry() -> int:
+    """Entry point for the ``omnid`` console script / systemd unit."""
+    return main(["daemon"])
 
 
 if __name__ == "__main__":

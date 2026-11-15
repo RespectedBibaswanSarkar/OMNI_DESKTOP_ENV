@@ -19,6 +19,9 @@ LEXICON: tuple[str, ...] = (
     "link", "table", "grid", "canvas", "item", "scrollbar", "toggle",
     "plan", "workflow", "cross", "cross-app", "reasoning", "handoff", "multi", "goal", "steps", "tools",
     "slack", "discord", "spotify", "spreadsheet", "calc", "excel", "gnumeric", "invoice",
+    # desktop-control vocabulary (appended so existing indices stay stable)
+    "open", "launch", "start", "switch", "focus", "close", "volume", "brightness", "wifi", "media",
+    "play", "pause", "app", "desktop", "type", "press", "key", "music", "mute",
 )
 
 LEXICON_INDEX: dict[str, int] = {token: index for index, token in enumerate(LEXICON)}

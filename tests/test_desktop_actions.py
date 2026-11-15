@@ -26,7 +26,7 @@ def test_file_search_is_read_only(tmp_path):
 
 def test_desktop_change_requires_confirmation(tmp_path):
     calls = []
-    registry = DesktopActionRegistry(tmp_path, runner=fake_runner(calls))
+    registry = DesktopActionRegistry(tmp_path, runner=fake_runner(calls), which=lambda name: f"/usr/bin/{name}")
     prepared = registry.prepare("volume.set", {"percent": 30})
     assert prepared.confirmation_required
     assert prepared.confirmation_token
