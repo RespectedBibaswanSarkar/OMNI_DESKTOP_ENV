@@ -15,6 +15,16 @@ the action allowlist and the confirmation tiers are unchanged.
   is an earlier kept step. At run time a step whose dependency failed is **skipped and reported**, never run.
 * A real (non-null) desktop backend selects the desktop planner even if IARS routed to a file/document agent.
 
+## Stepwise (observe -> act -> observe) mode
+Small local models often cannot emit a whole structured plan. When the whole-plan request yields no usable step
+and a live model is available, the pipeline switches to **stepwise mode** (`record.stepwise`):
+each round the model sees the current windows/controls and the actions already done and returns ONE next action
+(or `done: true`). The action is validated by the same registry and executed through the same confirmation
+tiers, then the desktop is re-observed. The loop stops when the model says done, when it repeats an action, when
+no valid action is returned, or at `max_stepwise_steps` (default 10). A loop that ends without the model
+declaring completion is reported as incomplete (`verification["complete"] = False`). "Done" is the model's own
+claim; deterministic post-conditions still apply to each step.
+
 ## Verification
 * Execution success is not task success. `verify()` results can be `conclusive: False` (e.g. a browser process is
   alive but no window title matched); such steps pass (they are not failures) but are listed in

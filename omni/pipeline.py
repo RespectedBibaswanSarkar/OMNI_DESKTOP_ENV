@@ -87,6 +87,8 @@ class TaskRecord:
     generation: dict[str, Any] = field(default_factory=dict)
     execution: dict[str, Any] = field(default_factory=dict)
     verification: dict[str, Any] = field(default_factory=dict)
+    stepwise: bool = False            # planner fell back to one-action-at-a-time (observe -> act -> observe)
+    stepwise_done: bool = False       # the model declared the goal finished in stepwise mode
     reward: dict[str, Any] = field(default_factory=dict)
     workspace: str = ""
     result_text: str = ""
@@ -185,6 +187,7 @@ class OmniPipeline:
         speak_results: bool = False,
         projects_root: str | Path | None = None,
         max_followups: int = 2,
+        max_stepwise_steps: int = 10,
         gen_workers: int = 3,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
@@ -216,6 +219,7 @@ class OmniPipeline:
         self.last_plan: list[dict[str, Any]] = []
         self.projects_root = Path(projects_root) if projects_root else Path.home() / "OMNI_Projects"
         self.max_followups = max(0, int(max_followups))
+        self.max_stepwise_steps = max(1, int(max_stepwise_steps))
         self.gen_workers = max(1, int(gen_workers))
         self.notify_results = bool(notify_results)
         self.speak_results = bool(speak_results)
@@ -452,8 +456,21 @@ class OmniPipeline:
                 break
             if verif["passed"]:
                 # goal-level check on the live application state; continue if work remains
-                if follow >= self.max_followups or not any(e["step"]["action"] in self.desktop.ACTIONS for e in active):
+                limit = self.max_stepwise_steps if record.stepwise else self.max_followups
+                if follow >= limit or (not record.stepwise and not any(e["step"]["action"] in self.desktop.ACTIONS for e in active)):
                     break
+                if record.stepwise:
+                    if record.stepwise_done:
+                        break
+                    follow += 1
+                    seen = {json.dumps(e["step"], sort_keys=True) for e in active}
+                    new_steps = self._replan(record, model_tag, agent_id, "Continue toward the goal, or return done=true if it is achieved.")
+                    new_steps = [st for st in new_steps if json.dumps(st, sort_keys=True) not in seen] if new_steps else []
+                    record.stage("stepwise", "done", round=follow, finished=record.stepwise_done)
+                    if not new_steps:
+                        break                       # nothing new to do (or the model repeated itself): stop, do not loop
+                    steps_now = new_steps
+                    continue
                 state = self.desktop.app_state()
                 text = self._state_text(state)
                 verdict = self.multimodel.assess(record.goal, text) if text else None
@@ -468,9 +485,23 @@ class OmniPipeline:
                     break
                 steps_now = new_steps
                 continue
+            failing = [e for e in active if e["step"]["action"] in self.desktop.ACTIONS and not e["result"].get("verified", e["result"]["success"])]
+            critic_said = next((c for c in verif["checks"] if c["check"] == "critic" and not c["passed"]), None)
+            if not failing and critic_said is not None and follow < self.max_stepwise_steps:
+                # Every step ran but the goal-level critic says the job is unfinished (e.g. the plan only
+                # observed the desktop). That is "more work needed", not "give up": continue one action at a time.
+                record.stepwise = True
+                follow += 1
+                seen = {json.dumps(e["step"], sort_keys=True) for e in active}
+                new_steps = self._replan(record, model_tag, agent_id, "Goal not finished: " + str(critic_said.get("detail", ""))[:200])
+                new_steps = [st for st in new_steps if json.dumps(st, sort_keys=True) not in seen] if new_steps else []
+                record.stage("stepwise", "done", round=follow, finished=record.stepwise_done, reason="critic")
+                if not new_steps:
+                    break
+                steps_now = new_steps
+                continue
             if attempt >= self.max_replans:
                 break
-            failing = [e for e in active if e["step"]["action"] in self.desktop.ACTIONS and not e["result"].get("verified", e["result"]["success"])]
             if not failing:
                 break
             feedback = "; ".join(f"{e['step']['action']} {e['result']['path']} -> {e['result']['detail']}" for e in failing)[:600]
@@ -498,6 +529,9 @@ class OmniPipeline:
         exec_results = [e["result"] for e in active]
         record.stage("execution", "done", executed=executed, total=len(active), replans=attempt, followups=follow)
         self._checkpoint(record)
+        if record.stepwise and not record.stepwise_done:
+            verif["complete"] = False
+            verif["unconfirmed"] = list(verif.get("unconfirmed", [])) + ["(goal) stepwise loop stopped before the model declared the goal finished"]
         record.verification = verif
         passed = bool(verif["passed"])
         record.stage("verification", "passed" if passed else "failed",
@@ -671,6 +705,67 @@ class OmniPipeline:
             '{"id": "s2", "action": "window.wait", "args": {"target": "Firefox"}, "depends_on": ["s1"]}]}'
         )
 
+    def _stepwise_prompt(self, record: TaskRecord, observation: dict[str, Any] | None, feedback: str | None) -> str:
+        """One-action prompt: small local models plan far more reliably one step at a time than as a whole plan."""
+        obs = observation or {}
+        actions = "\n".join(f"- {a['name']} {a['args']}: {a['description']}" for a in self.desktop.describe())
+        windows = "; ".join(f"[{w['workspace']}] {w['class']}: {w['title'][:40]}" for w in obs.get("windows", [])) or "none"
+        ui = obs.get("ui") or {}
+        screen = ""
+        if ui.get("items"):
+            screen = f"\nActive app: {ui.get('app')} - {ui.get('window')}; controls: " + "; ".join(f"{i['role']}:{i['name'][:30]}" for i in ui["items"][:20])
+        history = "\n".join(f"{n}. {st['action']} {json.dumps(st.get('args') or st.get('path') or '', ensure_ascii=False)[:120]}"
+                            for n, st in enumerate(record.plan[-12:], 1)) or "(nothing yet)"
+        catalogue = "\n".join(f"- {h}" for h in self._app_hints(record.goal, limit=12)) or "- (none discovered)"
+        note = f"\nNote: {feedback}" if feedback else ""
+        return (
+            "You are OMNI controlling the user's Linux desktop one action at a time, like a careful person at the keyboard.\n"
+            f"Allowed actions:\n{actions}\n"
+            "Choose ONLY the NEXT ACTION toward the goal. Use the current state below; do not repeat an action already done. "
+            "File steps use path/content (mkdir/write_file/write_json; give write_file a short \"brief\" for long files). "
+            "Never invent app names; use the installed apps below or an app TYPE like 'text editor'. "
+            "When the goal is fully achieved, or it is only a question, return done=true (with reply text if the user needs an answer).\n"
+            f"Installed apps (ranked):\n{catalogue}\n"
+            f"Open windows: {windows}\nFocused: {obs.get('focused')}{screen}\n"
+            f"Actions already done:\n{history}{note}\n"
+            f"Goal: {record.goal}\n"
+            'Return ONLY JSON: {"done": false, "action": "app.launch", "args": {"app": "text editor"}} '
+            'or {"done": true, "reply": "..."}'
+        )
+
+    def _stepwise_next(self, record: TaskRecord, model_tag: str | None, observation: dict[str, Any] | None,
+                       feedback: str | None) -> tuple[list[dict[str, Any]], bool]:
+        """Ask the model for the single next validated action. Returns (steps, done)."""
+        actions = sorted(set(self.desktop.ACTIONS) | GENERATION_ACTIONS)
+        schema = {"type": "object", "properties": {
+            "done": {"type": "boolean"}, "reply": {"type": "string"},
+            "action": {"type": "string", "enum": actions}, "args": {"type": "object"},
+            "path": {"type": "string"}, "content": {"type": "string"}, "brief": {"type": "string"}},
+            "required": ["done"]}
+        prompt = self._stepwise_prompt(record, observation, feedback)
+        candidates = [model_tag] + [t for t in record.model.get("fallback_chain", []) if t != model_tag][:2]
+        text = ""
+        for tag in candidates:
+            try:
+                result = self.llm.complete(prompt, params={"num_predict": self.max_gen_tokens, "temperature": 0.2}, model=tag,
+                                           fmt=schema if not self.llm.is_mock else None,
+                                           think=False if not self.llm.is_mock else None, use_cache=False,
+                                           keep_alive="10m" if tag else None)
+                text = result.text
+                break
+            except Exception:  # noqa: BLE001 - try the next model in the chain
+                continue
+        parsed = extract_json(text or "")
+        if not isinstance(parsed, dict):
+            return [], False
+        raw = {k: parsed[k] for k in ("action", "args", "path", "content", "brief") if k in parsed}
+        steps = self._sanitize_steps([raw]) if raw.get("action") else []
+        done = bool(parsed.get("done"))
+        reply = str(parsed.get("reply", "")).strip()
+        if done and reply and not steps:
+            steps = self._sanitize_steps([{"action": "reply", "args": {"text": reply}}])
+        return steps, done
+
     def _file_prompt(self, record: TaskRecord) -> str:
         return (
             "You are the OMNI desktop assistant. Produce a JSON plan executed in an isolated sandbox.\n"
@@ -732,6 +827,10 @@ class OmniPipeline:
                 continue
             if action in self.desktop.ACTIONS:
                 args = step.get("args") if isinstance(step.get("args"), dict) else {}
+                # Small models sometimes stuff unrelated text into made-up argument names; keep only the
+                # keys the action's signature declares (validation of their values still follows).
+                allowed = set(re.findall(r'"(\w+)"', self.desktop.ACTIONS[action].args)) | {"address"}
+                args = {k: v for k, v in args.items() if k in allowed}
                 try:
                     self.desktop._validate(action, dict(args))
                 except ValueError:
@@ -817,9 +916,17 @@ class OmniPipeline:
                     cached=bool(result.cached) if result is not None else False, elapsed_s=round(elapsed, 3))
         parsed = extract_json(text or "")
         steps = self._sanitize_steps(parsed.get("steps", [])) if parsed else []
+        if not steps and desktop_mode and self.multimodel.live and not feedback:
+            # The whole-plan request produced nothing usable (typical of small models): switch to
+            # observe -> act -> observe, asking for one action per round.
+            steps, done = self._stepwise_next(record, model_tag, observation, None)
+            if steps or done:
+                record.stepwise, record.stepwise_done = True, done
+                meta.update(source="llm-stepwise", summary="stepwise: one action per observation")
         structured = bool(steps)
         if structured:
-            meta["summary"] = str(parsed.get("summary", ""))[:300]
+            if parsed:
+                meta["summary"] = str(parsed.get("summary", ""))[:300]
             pass
         fallback = False
         if not steps:
@@ -893,6 +1000,11 @@ class OmniPipeline:
         self.inference_active = True
         try:
             record.observation = self._observe(record, agent_id, None)
+            if record.stepwise:
+                steps, done = self._stepwise_next(record, model_tag, record.observation, feedback)
+                record.stepwise_done = done
+                record.plan = record.plan + steps
+                return steps
             steps, meta = self._generate_plan(record, model_tag, agent_id, observation=record.observation, feedback=feedback)
         finally:
             self.inference_active = False
