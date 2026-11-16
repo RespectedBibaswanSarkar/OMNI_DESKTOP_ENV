@@ -689,7 +689,10 @@ class DesktopActionRegistry:
             browser = self.apps.resolve("web browser")
             if browser is not None and self._running(browser):
                 note = "title not matched yet" if self._window_layer() else "window tracking unavailable"
-                return {"passed": True, "detail": f"browser process alive; {note}", "layer": "process"}
+                # A live browser proves a browser is open, not that navigation succeeded:
+                # reported as passed (it is not a failure) but flagged non-conclusive so the
+                # pipeline can say the end state was not independently confirmed.
+                return {"passed": True, "detail": f"browser process alive; {note}", "layer": "process", "conclusive": False}
             return {"passed": False, "detail": "no browser window or process found"}
         if action == "workspace.switch":
             ws = self.backend.active_workspace()

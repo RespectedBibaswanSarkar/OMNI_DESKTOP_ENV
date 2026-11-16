@@ -66,7 +66,11 @@ STATIC_KEYWORD_AGENT: list[tuple[tuple[str, ...], str]] = [
 GENERATION_ACTIONS = {"mkdir", "write_file", "write_json"}
 DESKTOP_PLAN_AGENTS = {"desktop-control", "planner", "visual-ui"}
 META_ACTIONS = {"reply", "routine.save"}      # handled by the pipeline itself, not the desktop registry
-MAX_PLAN_STEPS = 5
+MAX_PLAN_STEPS = 12          # upper bound per planning round; follow-up rounds extend longer workflows
+# Artifact formats that can be parsed deterministically after a write (extension -> validator name).
+ARTIFACT_VALIDATORS = {".json": "json", ".py": "python", ".toml": "toml", ".xml": "xml", ".svg": "xml",
+                       ".html": "nonempty", ".htm": "nonempty", ".md": "nonempty", ".txt": "nonempty",
+                       ".csv": "nonempty", ".tex": "nonempty"}
 
 
 @dataclass
@@ -489,6 +493,7 @@ class OmniPipeline:
             "total": len(active),
             "replans": attempt,
             "followups": follow,
+            "artifacts": self._collect_artifacts(active, exec_root),
         }
         exec_results = [e["result"] for e in active]
         record.stage("execution", "done", executed=executed, total=len(active), replans=attempt, followups=follow)
@@ -543,7 +548,8 @@ class OmniPipeline:
         source = record.generation.get("source")
         if passed and real:
             self.last_plan = real
-            if self.ablation.get("memory", True) and source in {"llm", "rules", "memory"} and not record.generation.get("fallback"):
+            confirmed = record.verification.get("complete", True)    # never memorise a plan whose result was only assumed
+            if confirmed and self.ablation.get("memory", True) and source in {"llm", "rules", "memory"} and not record.generation.get("fallback"):
                 self.plans.remember(record.goal, real, key=record.generation.get("memory_key"))
         elif not passed and source == "memory" and record.generation.get("memory_key"):
             self.plans.penalize(record.generation["memory_key"])      # stale plan: forget it, re-plan next time
@@ -592,14 +598,18 @@ class OmniPipeline:
         return obs
 
     def _app_hints(self, goal: str, limit: int = 14) -> list[str]:
-        words = set(re.findall(r"[a-z0-9]+", goal.lower()))
+        """Installed apps ranked against the goal, each with the metadata that evidences its capability."""
         try:
-            entries = self.desktop.apps.entries()
-        except Exception:  # noqa: BLE001
+            ranker = getattr(self.desktop.apps, "rank_for_task", None)
+            entries = ranker(goal, limit=limit) if callable(ranker) else self.desktop.apps.entries()
+        except Exception:  # noqa: BLE001 - discovery is best effort
             return []
-        hits = [e.name for e in entries if words & e.tokens()]
-        rest = [e.name for e in entries if e.name not in hits]
-        return (hits + rest)[:limit]
+        hints = []
+        for entry in list(entries)[:limit]:
+            parts = [entry.generic, entry.comment, ", ".join(entry.categories), ", ".join(entry.keywords)]
+            detail = " | ".join(p.strip() for p in parts if p and p.strip())
+            hints.append(f"{entry.name} ({detail[:180]})" if detail else entry.name)
+        return hints
 
     def _plan_schema(self) -> dict[str, Any]:
         actions = sorted(set(self.desktop.ACTIONS) | GENERATION_ACTIONS | META_ACTIONS)
@@ -611,7 +621,8 @@ class OmniPipeline:
                     "type": "object",
                     "properties": {"action": {"type": "string", "enum": actions},
                                    "args": {"type": "object"}, "path": {"type": "string"}, "content": {"type": "string"},
-                                   "brief": {"type": "string"}},
+                                   "brief": {"type": "string"}, "id": {"type": "string"},
+                                   "depends_on": {"type": "array", "items": {"type": "string"}}},
                     "required": ["action"]}},
             },
             "required": ["steps"],
@@ -628,19 +639,36 @@ class OmniPipeline:
         if obs.get("processes"):
             extra += "\nRunning apps: " + ", ".join(obs["processes"][:15])
         fb = f"\nPrevious attempt failed: {feedback}. Fix it using only the allowed actions." if feedback else ""
+        catalogue = "\n".join(f"- {h}" for h in self._app_hints(record.goal, limit=18)) or "- (no installed-application metadata discovered)"
         return (
-            "You are OMNI, an agent controlling a Linux Hyprland desktop. Turn the goal into 1-5 steps.\n"
+            "You are OMNI, a task-general assistant operating the user's current Linux desktop "
+            f"(active backend: {obs.get('backend', 'unknown')}). Turn the requested outcome into a "
+            f"dependency-ordered plan of 1-{MAX_PLAN_STEPS} steps; use fewer steps for simple tasks.\n"
             f"Allowed actions:\n{actions}\n"
             "File steps use {\"action\": \"write_file\", \"path\": \"rel/path\", \"content\": \"...\"} (mkdir/write_file/write_json).\n"
+            "Optional step fields: \"id\" (short unique label) and \"depends_on\" (ids of EARLIER steps that must succeed first); "
+            "a step whose dependency failed is skipped and reported, so use depends_on wherever order matters.\n"
             "If the user only asks a question or no action is needed, answer with one step {\"action\": \"reply\", \"args\": {\"text\": \"...\"}}.\n"
-            "Prefer reading state first (system.info, window.list, ui.read) instead of guessing. Never invent app names: use the installed apps below, or an app TYPE such as 'text editor', 'web browser', 'code editor'.\n"
-            "For long files (code, LaTeX) give write_file a short \"brief\" instead of \"content\": a specialist coder model writes the full file.\n"
-            "To start a coding project: write_file steps for the structure, then project.open. For LaTeX: write_file report.tex with a brief, then overleaf.open. To play a song/video: web.search with site youtube and play true.\n"
-            "After opening something, use window.wait or ui.read to confirm it, then ui.click / ui.type to continue inside the app.\n"
-            f"Installed apps (sample): {', '.join(self._app_hints(record.goal))}\n"
-            f"Desktop: {obs.get('backend', '?')}. Open windows: {windows}\nFocused: {obs.get('focused')}{extra}{fb}\n"
+            "Plan for the COMPLETE requested outcome. Launching an app, opening a URL or showing search results is "
+            "only an intermediate state unless that is exactly what was asked; plan the observation steps (window.wait, ui.read) "
+            "and the interactions needed afterwards. Heterogeneous goals (research, writing, files, apps) may mix action types in one plan.\n"
+            "Prefer reading state first (system.info, window.list, app.list, ui.read) instead of guessing. Choose applications "
+            "from the installed catalogue below using their advertised name, generic name, description, keywords and categories "
+            "as evidence; never invent app names, but an app TYPE such as 'text editor' or 'web browser' is accepted. If no "
+            "installed app fits, say so with a reply step instead of forcing an unrelated one. Reuse the user's existing browser "
+            "session; do not open a browser for work that belongs to another application.\n"
+            "For long files (code, LaTeX, reports) give write_file a short \"brief\" instead of \"content\": a specialist model writes the full file. "
+            "Save deliverables under sensible relative paths; they are verified on disk afterwards.\n"
+            "Existing shortcuts: for a coding project write the files then project.open; for LaTeX write report.tex then overleaf.open; "
+            "to play a song/video use web.search with site youtube and play true.\n"
+            "Sending, publishing, purchasing, deleting, overwriting user data, entering credentials and similar consequential "
+            "operations are confirmation-gated by the registry; never try to route around it or invent shell commands.\n"
+            "Do not assume success because an action was dispatched: plan so the result can be observed and checked.\n"
+            f"Installed application catalogue (ranked for this goal):\n{catalogue}\n"
+            f"Open windows: {windows}\nFocused: {obs.get('focused')}{extra}{fb}\n"
             f"Goal: {record.goal}\n"
-            'Return ONLY JSON: {"summary": "...", "steps": [{"action": "app.launch", "args": {"app": "Firefox"}}]}'
+            'Return ONLY JSON: {"summary": "...", "steps": [{"id": "s1", "action": "app.launch", "args": {"app": "Firefox"}}, '
+            '{"id": "s2", "action": "window.wait", "args": {"target": "Firefox"}, "depends_on": ["s1"]}]}'
         )
 
     def _file_prompt(self, record: TaskRecord) -> str:
@@ -654,7 +682,37 @@ class OmniPipeline:
             "keep each file under 1500 characters."
         )
 
+    _STEP_ID = re.compile(r"[A-Za-z0-9_.\-]{1,32}")
+
     def _sanitize_steps(self, raw_steps: Any) -> list[dict[str, Any]]:
+        """Validate model output, then resolve the step dependency graph.
+
+        A step is kept only if it validates on its own AND every dependency it names refers to an
+        earlier step that was itself kept; otherwise it is dropped rather than run out of order.
+        """
+        steps: list[dict[str, Any]] = []
+        known: set[str] = set()
+        for step in (raw_steps if isinstance(raw_steps, list) else [])[:MAX_PLAN_STEPS]:
+            if not isinstance(step, dict):
+                continue
+            deps_raw = step.get("depends_on")
+            deps = [str(d) for d in deps_raw] if isinstance(deps_raw, list) else []
+            if any(d not in known for d in deps):
+                continue
+            produced = self._sanitize_steps_core([step])
+            if not produced:
+                continue
+            entry = produced[0]
+            sid = str(step.get("id", "")).strip()
+            if sid and self._STEP_ID.fullmatch(sid) and sid not in known:
+                entry["id"] = sid
+                known.add(sid)
+            if deps:
+                entry["depends_on"] = deps
+            steps.append(entry)
+        return steps
+
+    def _sanitize_steps_core(self, raw_steps: Any) -> list[dict[str, Any]]:
         """Validate model output: file steps by path containment, desktop steps by the registry."""
         steps: list[dict[str, Any]] = []
         for step in (raw_steps if isinstance(raw_steps, list) else [])[:MAX_PLAN_STEPS]:
@@ -708,7 +766,11 @@ class OmniPipeline:
         observation: dict[str, Any] | None = None,
         feedback: str | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        desktop_mode = agent_id in DESKTOP_PLAN_AGENTS or self.multimodel.live
+        # A specialist IARS route chooses the agent/model; it must not force a real desktop task into
+        # the isolated-file planner. Any real (non-null) desktop backend selects the unified desktop
+        # planning surface, whichever compositor or session provides it.
+        real_backend = type(getattr(self.desktop, "backend", None)).__name__ != "NullBackend"
+        desktop_mode = agent_id in DESKTOP_PLAN_AGENTS or self.multimodel.live or real_backend
         started = time.time()
         meta: dict[str, Any] = {"model": model_tag or "mock", "mock": self.llm.is_mock, "cached": False,
                                 "elapsed_s": 0.0, "source": "llm"}
@@ -872,9 +934,20 @@ class OmniPipeline:
                 st = steps[i]
                 futures[i] = pool.submit(self.multimodel.generate_file, record.goal if record else "", st["path"], st.get("brief", ""), st.get("content", ""))
         results: list[dict[str, Any]] = []
+        failed_ids: set[str] = set()
         try:
             for i, step in enumerate(steps):
                 action = step["action"]
+                blocked = next((d for d in step.get("depends_on", []) if d in failed_ids), None)
+                if blocked is not None:
+                    # Never run a step whose prerequisite failed; report it instead of faking progress.
+                    if step.get("id"):
+                        failed_ids.add(step["id"])
+                    label = step.get("path") or json.dumps(step.get("args", {}), ensure_ascii=False)
+                    results.append({"action": action, "path": label, "success": False, "skipped": True,
+                                    "kind": "desktop" if action in self.desktop.ACTIONS else "file",
+                                    "detail": f"skipped: dependency '{blocked}' did not succeed"})
+                    continue
                 if action == "reply":
                     results.append({"action": "reply", "path": "", "success": True, "detail": step["args"]["text"], "kind": "meta", "verified": True})
                     continue
@@ -889,6 +962,8 @@ class OmniPipeline:
                         for f in futures.values():          # these need every generated file on disk first
                             f.result()
                     results.append(self._execute_desktop(step, record))
+                    if not results[-1]["success"] and step.get("id"):
+                        failed_ids.add(step["id"])
                     continue
                 rel, content = step["path"], step.get("content", "")
                 if i in futures:
@@ -913,10 +988,27 @@ class OmniPipeline:
                 except OSError as exc:
                     detail = f"OSError: {exc}"
                 results.append({"action": action, "path": rel, "success": ok, "detail": detail})
+                if not ok and step.get("id"):
+                    failed_ids.add(step["id"])
         finally:
             if pool is not None:
                 pool.shutdown(wait=True)
         return results
+
+    @staticmethod
+    def _collect_artifacts(active: list[dict[str, Any]], root: Path) -> list[dict[str, Any]]:
+        """Files this task produced that still exist on disk, with absolute locations."""
+        out, seen = [], set()
+        for e in active:
+            st = e["step"]
+            if st["action"] not in GENERATION_ACTIONS or st["action"] == "mkdir" or not e["result"].get("success"):
+                continue
+            path = root / st["path"]
+            if str(path) in seen or not path.is_file():
+                continue
+            seen.add(str(path))
+            out.append({"path": str(path), "bytes": path.stat().st_size})
+        return out
 
     @staticmethod
     def _is_code(path: str) -> bool:
@@ -926,6 +1018,7 @@ class OmniPipeline:
     def _verify(self, steps: list[dict[str, Any]], root: Path, exec_results: list[dict[str, Any]], goal: str = "") -> dict[str, Any]:
         checks = []
         unverified: list[str] = []
+        unconfirmed: list[str] = []          # steps whose real-world effect was not independently observed
         for step, run in zip(steps, exec_results):
             if step["action"] in META_ACTIONS:
                 checks.append({"path": run["path"] or "reply", "check": "executed", "passed": bool(run["success"])})
@@ -936,10 +1029,21 @@ class OmniPipeline:
                     checks.append({"path": run["path"], "check": "execution", "passed": False, "detail": run["detail"]})
                     continue
                 post = self.desktop.verify(step["action"], dict(step.get("args", {})))
-                if post is None:
+                if post is not None and post.get("conclusive") is False:
+                    # Not a failure, but the intended end state was not observed (e.g. a browser is merely running).
                     unverified.append(run["path"])
+                    unconfirmed.append(run["path"])
                     run["verified"] = True
-                    checks.append({"path": run["path"], "check": "executed", "passed": True, "note": "no deterministic post-condition"})
+                    checks.append({"path": run["path"], "check": "post_condition", "passed": bool(post["passed"]),
+                                   "detail": post["detail"], "conclusive": False})
+                elif post is None:
+                    unverified.append(run["path"])
+                    side_effect = self.desktop.tier_of(step["action"]) != "read-only"
+                    if side_effect:                  # observing state changes nothing, so it needs no confirmation
+                        unconfirmed.append(run["path"])
+                    run["verified"] = True
+                    checks.append({"path": run["path"], "check": "executed", "passed": True, "note": "no deterministic post-condition",
+                                   **({"conclusive": False} if side_effect else {})})
                 else:
                     run["verified"] = bool(post["passed"])
                     checks.append({"path": run["path"], "check": "post_condition", "passed": bool(post["passed"]), "detail": post["detail"]})
@@ -960,16 +1064,54 @@ class OmniPipeline:
                 content = path.read_text(encoding="utf-8")
                 checks.append({"path": step["path"], "check": "non_empty_content",
                                "passed": len(content.strip()) > 10})
+            if step["action"] in {"write_file", "write_json"} and exists.passed:
+                ok_fmt, fmt_detail = self._validate_artifact(path)
+                if ok_fmt is not None:
+                    checks.append({"path": step["path"], "check": "valid_format", "passed": ok_fmt, "detail": fmt_detail})
         # critic role: semantic check only where no deterministic post-condition exists
+        critic_ok: bool | None = None
         if unverified and goal and self.multimodel.live:
             critique = self.multimodel.critique(goal, "; ".join(unverified)[:500])
             if critique is not None and "satisfied" in critique:
-                checks.append({"path": "(goal)", "check": "critic", "passed": bool(critique["satisfied"]),
+                critic_ok = bool(critique["satisfied"])
+                checks.append({"path": "(goal)", "check": "critic", "passed": critic_ok,
                                "detail": str(critique.get("reason", ""))[:160]})
         total = len(checks)
         passed_count = sum(1 for c in checks if c["passed"])
-        return {"checks": checks, "passed": total > 0 and passed_count == total,
+        passed = total > 0 and passed_count == total
+        # "passed" = nothing failed. "complete" additionally requires that every effect that could not be
+        # observed deterministically was at least confirmed by the critic: executed != accomplished.
+        complete = passed and (not unconfirmed or critic_ok is True)
+        return {"checks": checks, "passed": passed, "complete": complete,
+                "unconfirmed": [] if critic_ok is True else unconfirmed,
                 "passed_count": passed_count, "total": total}
+
+    @staticmethod
+    def _validate_artifact(path: Path) -> tuple[bool | None, str]:
+        """Parse a generated file by type. ``(None, '')`` means the format has no deterministic validator."""
+        kind = ARTIFACT_VALIDATORS.get(path.suffix.lower())
+        if kind is None:
+            return None, ""
+        try:
+            text = path.read_text(encoding="utf-8")
+            if kind == "json":
+                json.loads(text)
+            elif kind == "python":
+                import ast
+                ast.parse(text)
+            elif kind == "toml":
+                import tomllib
+                tomllib.loads(text)
+            elif kind == "xml":
+                import xml.etree.ElementTree as ET
+                ET.fromstring(text)
+            elif not text.strip():
+                return False, "file is empty"
+        except (OSError, UnicodeDecodeError) as exc:
+            return False, f"unreadable: {exc}"
+        except Exception as exc:  # noqa: BLE001 - any parser error means the artifact is invalid
+            return False, f"invalid {kind}: {str(exc)[:100]}"
+        return True, f"valid {kind}"
 
     def _reward(self, record: TaskRecord, passed: bool, latency: float) -> dict[str, Any]:
         latency_budget = max(self.gen_timeout, 1.0)
@@ -1036,6 +1178,13 @@ class OmniPipeline:
             lines.append(f"  [{mark}] {run['action']} {run['path']} — {run['detail']}")
         v = record.verification
         lines.append(f"Verification: {v.get('passed_count', 0)}/{v.get('total', 0)} checks passed.")
+        for art in record.execution.get("artifacts", []):
+            lines.append(f"  artifact: {art['path']} ({art['bytes']} bytes)")
+        if v.get("passed") and v.get("unconfirmed"):
+            lines.append("Not independently confirmed (actions ran, end state unobserved): " + "; ".join(v["unconfirmed"])[:300])
+        skipped = [r for r in record.execution.get("steps", []) if r.get("skipped")]
+        if skipped:
+            lines.append(f"{len(skipped)} step(s) skipped because a dependency failed; the task is incomplete.")
         return "\n".join(lines)
 
     # ------------------------------------------------------------ observatory

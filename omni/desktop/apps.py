@@ -35,7 +35,7 @@ class AppEntry:
         return self.desktop_id[:-8] if self.desktop_id.endswith(".desktop") else self.desktop_id
 
     def tokens(self) -> set[str]:
-        text = " ".join([self.stem, self.name, self.generic, self.comment, *self.keywords])
+        text = " ".join([self.stem, self.name, self.generic, self.comment, *self.keywords, *self.categories])
         return set(_WORD.findall(text.lower()))
 
     def process_names(self) -> set[str]:
@@ -203,6 +203,48 @@ class AppIndex:
 
     def by_id(self, desktop_id: str) -> AppEntry | None:
         return next((e for e in self.entries() if e.desktop_id == desktop_id), None)
+
+    def rank_for_task(self, query: str, limit: int = 12) -> list[AppEntry]:
+        """Rank installed apps against an arbitrary task description.
+
+        Uses only live desktop-entry metadata (name, generic name, comment, keywords,
+        categories) plus the optional embedder, so there is no fixed task taxonomy.
+        Ranking is advisory: it feeds the planner's catalogue and never authorises a launch;
+        every launch still goes through the action registry.
+        """
+        q = normalize_query(query)
+        if not q or limit <= 0:
+            return []
+        entries = self.entries()
+        if not entries:
+            return []
+        query_tokens = set(q.split())
+        semantic = [0.0] * len(entries)
+        if self.embedder:
+            docs = [" ".join((e.name, e.generic, e.comment, *e.keywords, *e.categories)) for e in entries]
+            try:
+                vectors = self.embedder([q] + docs)
+                if vectors and len(vectors) == len(docs) + 1:
+                    import numpy as np
+                    matrix = np.asarray(vectors, dtype=float)
+                    matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-9)
+                    semantic = [float(v) for v in (matrix[1:] @ matrix[0])]
+            except Exception:  # noqa: BLE001 - lexical ranking stays available
+                pass
+        ranked: list[tuple[float, int, AppEntry]] = []
+        for index, entry in enumerate(entries):
+            def words(*parts: str) -> set[str]:
+                return set(_WORD.findall(" ".join(parts).lower()))
+            score = (4.0 * len(query_tokens & words(entry.name, entry.stem))
+                     + 3.0 * len(query_tokens & words(entry.generic))
+                     + 2.0 * len(query_tokens & words(entry.comment))
+                     + 2.0 * len(query_tokens & words(*entry.keywords))
+                     + 0.75 * len(query_tokens & words(*entry.categories))
+                     + 4.0 * max(0.0, semantic[index]))
+            if score > 0:
+                ranked.append((score, index, entry))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [entry for _, _, entry in ranked[:limit]]
 
     def resolve(self, query: str) -> AppEntry | None:
         """name -> installed default for an app *type* -> category match -> semantic similarity."""
