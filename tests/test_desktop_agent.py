@@ -17,6 +17,7 @@ from omni.desktop.actions import DesktopActionRegistry
 from omni.desktop.apps import AppIndex, parse_desktop_file
 from omni.desktop.backends import GnomeBackend, HyprlandBackend
 from omni.desktop.rules import parse_desktop_intent
+from omni.desktop.tracker import ProcessTracker
 from omni.routines import PlanMemory
 from omni.llm.client import LLMClient
 from omni.local_models import LocalModelCenter, ModelInfo
@@ -37,6 +38,7 @@ class FakeDesktop:
         self.active_ws = active_ws
         self.runs: list[list[str]] = []
         self.spawns: list[dict] = []
+        self.window_class, self.window_title = "firefox", "Mozilla Firefox"
         self.gset: dict[str, str] = {}
         self.gset_frozen = False          # simulate a setting that refuses to change
         self.volume = 50
@@ -52,6 +54,8 @@ class FakeDesktop:
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(self.windows[0] if self.windows else {}), stderr="")
         if name == "hyprctl" and cmd[1:3] == ["dispatch", "workspace"]:
             self.active_ws = int(cmd[3])
+        if name == "gio" and cmd[1] == "mime":
+            return subprocess.CompletedProcess(cmd, 0, stdout="Default application for “text/plain”: none.desktop\n", stderr="")
         if name == "gsettings" and cmd[1] == "set" and not self.gset_frozen:
             self.gset[cmd[3]] = cmd[4]
         if name == "gsettings" and cmd[1] == "get":
@@ -65,7 +69,7 @@ class FakeDesktop:
     def popen(self, cmd, **kw):
         self.spawns.append({"cmd": cmd, **kw})
         if self.spawn_creates_window:
-            self.windows.append({"address": "0xabc1", "class": "firefox", "title": "Mozilla Firefox",
+            self.windows.append({"address": "0xabc1", "class": self.window_class, "title": self.window_title,
                                  "workspace": {"id": self.active_ws}, "mapped": True, "focusHistoryID": 0, "pid": 4242})
         return SimpleNamespace(pid=4242, wait=lambda: 0, poll=lambda: None)
 
@@ -83,6 +87,8 @@ def make_registry(tmp_path, apps_dir, fake, **kw):
     which = lambda n: f"/usr/bin/{n}"  # noqa: E731
     kw.setdefault("backend", HyprlandBackend(runner=fake.runner, which=which))
     kw.setdefault("user_dirs", [tmp_path / "home"])
+    kw.setdefault("procs", ProcessTracker(tmp_path / "fake_proc"))      # never read the real /proc in tests
+    kw.setdefault("tracker", None)
     return DesktopActionRegistry(
         tmp_path, runner=fake.runner, popen=fake.popen, which=which,
         apps=AppIndex(dirs=[apps_dir]), launch_wait=0.0, sleep=lambda s: None, **kw)
@@ -212,10 +218,10 @@ def build_pipeline(tmp_path, apps_dir, fake, llm=None, offline=True, models=(), 
         center.models[tag] = ModelInfo(tag=tag, base=tag.split(":")[0], digest=tag, family="x", parameter_size="4B",
                                        quantization="Q4", context_length=None, capabilities=("completion",), size_gb=2.0)
     kw.setdefault("plan_memory", PlanMemory(None))
+    kw.setdefault("desktop", make_registry(tmp_path, apps_dir, fake))
     return OmniPipeline(
         workspace_root=tmp_path / "ws", llm=llm or LLMClient(backend="mock", cache_dir=tmp_path / "c"),
-        offline=offline, hud_path=tmp_path / "hud.json", model_center=center,
-        desktop=make_registry(tmp_path, apps_dir, fake), **kw)
+        offline=offline, hud_path=tmp_path / "hud.json", model_center=center, **kw)
 
 
 def run(pipe, goal):
@@ -278,7 +284,7 @@ def test_failed_postcondition_triggers_replan_with_models(tmp_path, apps_dir):
     fake = FakeDesktop(spawn_creates_window=False)           # launch "succeeds" but no window ever appears
     llm = StubLLM()
     pipe = build_pipeline(tmp_path, apps_dir, fake, llm=llm, offline=False, auto_approve_reversible=True,
-                          models=("qwen3:4b", "qwen3:1.7b", "phi4-mini"), ablation={"iars": False})
+                          models=("qwen3:4b", "qwen3:1.7b", "phi4-mini"), ablation={"iars": False, "rules": False, "memory": False})
     rec = run(pipe, "launch a browser for me")
     assert rec.iars["agent"] == "desktop-control"
     assert rec.execution["replans"] == 1
@@ -481,3 +487,231 @@ def test_bench_reports_memory_effect():
     from omni.ablation import run_bench
     rows = run_bench(["create a notes folder with a readme"], configs={"full": {}, "no-memory": {"memory": False}}, repeat=2)
     assert {r["config"] for r in rows} == {"full", "no-memory"} and all(r["tasks"] == 2 for r in rows)
+
+
+# ================================================== tracking, app types, finishing the goal
+from omni.desktop.tracker import AtspiTracker  # noqa: E402
+
+TEXT_EDITOR = "[Desktop Entry]\nType=Application\nName=Text Editor\nGenericName=Text Editor\nExec=gnome-text-editor %U\nCategories=Utility;TextEditor;\n"
+CODE = "[Desktop Entry]\nType=Application\nName=Visual Studio Code\nExec=code --unity-launch %F\nStartupWMClass=Code\nCategories=Utility;TextEditor;Development;IDE;\n"
+
+
+class Node:
+    def __init__(self, name="", role="", children=(), pid=1, active=False, actions=(), text=""):
+        self.name, self.role, self.children, self.pid, self.active, self.actions, self.text = name, role, list(children), pid, active, list(actions), text
+        self.done = []
+
+
+class FakeAdapter:
+    def __init__(self, tree):
+        self.tree = tree
+
+    def roots(self): return self.tree
+    def name(self, n): return n.name
+    def role(self, n): return n.role
+    def children(self, n): return n.children
+    def pid(self, n): return n.pid
+    def active(self, n): return n.active
+    def actions(self, n): return n.actions
+    def do_action(self, n, i): n.done.append(i); return True
+    def set_text(self, n, t): n.text = t; return True
+
+
+def youtube_tree():
+    link = Node("Lofi beats to study to - 3 hours", "link", actions=["click"])
+    box = Node("Search", "entry")
+    page = Node("lofi beats - YouTube — Mozilla Firefox", "frame", [link, Node("Subscribe", "push button", actions=["press"]), box], active=True)
+    return [Node("Firefox", "application", [page])], link, box
+
+
+def test_process_tracker_reads_proc_without_any_window_data(tmp_path):
+    proc = tmp_path / "proc"
+    for pid, comm, state, start in ((1234, "firefox", "S", 500), (99, "firefox", "Z", 500)):
+        d = proc / str(pid)
+        d.mkdir(parents=True)
+        (d / "comm").write_text(comm)
+        (d / "cmdline").write_bytes(b"/snap/firefox/current/usr/lib/firefox/firefox\0-new-tab\0")
+        (d / "stat").write_text(f"{pid} ({comm}) {state} " + " ".join(["0"] * 18) + f" {start} 0 0")
+    (proc / "stat").write_text("btime 1000\n")
+    tr = ProcessTracker(proc, clk_tck=100)
+    hits = tr.find({"firefox"})
+    assert [h["pid"] for h in hits] == [1234]                         # zombie ignored
+    assert hits[0]["start"] == 1005.0
+    assert tr.find({"firefox"}, since=2000) == []                     # started before the launch => not "ours"
+
+
+def test_atspi_reads_and_acts_inside_any_accessible_app():
+    tree, link, box = youtube_tree()
+    tr = AtspiTracker(FakeAdapter(tree))
+    assert tr.windows()[0]["class"] == "firefox" and tr.windows()[0]["focus"] == 0
+    state = tr.read()
+    assert state["window"].startswith("lofi beats - YouTube") and {"role": "link", "name": "Lofi beats to study to - 3 hours"} in state["items"]
+    assert tr.click("lofi beats")[0] is True and link.done == [0]
+    assert tr.type_into("hello", name="search")[0] is True and box.text == "hello"
+    assert tr.click("nonexistent")[0] is False
+
+
+def test_window_tracking_survives_a_dead_bridge_via_accessibility(tmp_path, apps_dir):
+    tree, _, _ = youtube_tree()
+    which = lambda n: f"/usr/bin/{n}"  # noqa: E731
+    backend = GnomeBackend(runner=gnome_runner([], [], reachable=False), which=which, tracker=AtspiTracker(FakeAdapter(tree)))
+    reg = DesktopActionRegistry(tmp_path, runner=gnome_runner([], [], reachable=False), which=which, apps=AppIndex(dirs=[apps_dir]),
+                                backend=backend, procs=ProcessTracker(tmp_path / "p"), launch_wait=0.0)
+    assert reg.execute("window.list").data[0]["title"].startswith("lofi beats")
+    assert "Lofi beats" in reg.execute("ui.read").output
+    assert reg.layers() == {"bridge": False, "atspi": True, "proc": True}
+    assert "enable" in backend.status()["hint"].lower()
+
+
+@pytest.mark.parametrize("query,expected", [("a text editor", "org.gnome.TextEditor.desktop"), ("the default text editor", "org.gnome.TextEditor.desktop"),
+                                             ("code editor", "code.desktop"), ("web browser", "firefox.desktop"), ("firefox", "firefox.desktop")])
+def test_apps_are_found_by_type_not_just_name(tmp_path, query, expected):
+    d = tmp_path / "apps"; d.mkdir()
+    (d / "org.gnome.TextEditor.desktop").write_text(TEXT_EDITOR)
+    (d / "code.desktop").write_text(CODE)
+    (d / "firefox.desktop").write_text(FIREFOX + "Categories=Network;WebBrowser;\n")
+    idx = AppIndex(dirs=[d], mime_default=lambda m: {"text/plain": "org.gnome.TextEditor.desktop", "x-scheme-handler/https": "firefox.desktop"}.get(m))
+    assert idx.resolve(query).desktop_id == expected
+
+
+def test_type_resolution_adapts_to_what_is_installed(tmp_path):
+    d = tmp_path / "apps"; d.mkdir()
+    (d / "gedit.desktop").write_text("[Desktop Entry]\nType=Application\nName=gedit\nExec=gedit\nCategories=Utility;TextEditor;\n")
+    assert AppIndex(dirs=[d]).resolve("text editor").desktop_id == "gedit.desktop"        # no default registered: category match
+    emb = AppIndex(dirs=[d], embedder=lambda texts: [[1, 0]] + [[0.9, 0.1]] * (len(texts) - 1))
+    assert emb.resolve("something to jot notes").desktop_id == "gedit.desktop"            # long tail: semantic similarity
+
+
+def test_open_a_text_editor_end_to_end(tmp_path):
+    d = tmp_path / "apps"; d.mkdir()
+    (d / "org.gnome.TextEditor.desktop").write_text(TEXT_EDITOR)
+    fake = FakeDesktop()
+    fake.window_class = "org.gnome.TextEditor"
+    reg = make_registry(tmp_path, d, fake)
+    reg.apps = AppIndex(dirs=[d], mime_default=lambda m: "org.gnome.TextEditor.desktop")
+    pipe = build_pipeline(tmp_path, d, fake, auto_approve_reversible=True, desktop=reg)
+    rec = run(pipe, "open a text editor")
+    assert rec.status == "done", rec.verification
+    assert fake.spawns[0]["cmd"][1:3] == ["launch", str(d / "org.gnome.TextEditor.desktop")]
+
+
+def test_running_app_is_focused_not_launched_twice(tmp_path, apps_dir):
+    fake = FakeDesktop()
+    fake.windows = [{"address": "0x9", "class": "firefox", "title": "x", "workspace": {"id": 1}, "mapped": True, "focusHistoryID": 0}]
+    reg = make_registry(tmp_path, apps_dir, fake)
+    res = reg.confirm(reg.prepare("app.launch", {"app": "firefox"}).confirmation_token)
+    assert res.success and "already running" in res.output and not fake.spawns
+
+
+def test_launch_is_judged_on_process_when_no_window_layer_exists(tmp_path, apps_dir):
+    """The bug in the demo: Firefox ran, but with no window data the task was reported unfinished."""
+    proc = tmp_path / "fake_proc" / "4242"
+    proc.mkdir(parents=True)
+    (proc / "comm").write_text("firefox"); (proc / "cmdline").write_bytes(b"/usr/bin/firefox\0")
+    (proc / "stat").write_text("4242 (firefox) S " + " ".join(["0"] * 18) + " 0 0 0")
+    (tmp_path / "fake_proc" / "stat").write_text(f"btime {int(time.time())}\n")
+    fake = FakeDesktop(spawn_creates_window=False)
+    reg = make_registry(tmp_path, apps_dir, fake, backend=HyprlandBackend(runner=fake.runner, which=lambda n: None))
+    reg.confirm(reg.prepare("app.launch", {"app": "firefox"}).confirmation_token)
+    check = reg.verify("app.launch", {"app": "firefox"})
+    assert check["passed"] is True and check["layer"] == "process" and "window tracking unavailable" in check["detail"]
+    assert reg.verify("workspace.switch", {"workspace": 2}) is None          # unobservable => unverified, not failed
+
+
+def test_web_search_resolves_and_plays_top_youtube_result(tmp_path, apps_dir):
+    fake = FakeDesktop()
+    run_ = fake.runner
+    fake.runner = lambda cmd, **kw: (subprocess.CompletedProcess(cmd, 0, stdout="dQw4w9WgXcQ\n", stderr="") if Path(cmd[0]).name == "yt-dlp" else run_(cmd, **kw))
+    reg = make_registry(tmp_path, apps_dir, fake)
+    reg.confirm(reg.prepare("web.search", {"query": "lofi beats", "site": "youtube", "play": True}).confirmation_token)
+    assert fake.spawns[-1]["cmd"][-1] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ&autoplay=1"
+    nodl = make_registry(tmp_path, apps_dir, FakeDesktop())
+    nodl._which = lambda n: None if n == "yt-dlp" else f"/usr/bin/{n}"
+    assert nodl._search_url({"query": "lofi beats", "site": "youtube", "play": True}) == "https://www.youtube.com/results?search_query=lofi+beats"
+
+
+def test_overleaf_gets_the_generated_latex_via_the_open_in_overleaf_form(tmp_path, apps_dir):
+    fake = FakeDesktop()
+    reg = make_registry(tmp_path, apps_dir, fake)
+    reg.task_root = tmp_path / "task"
+    reg.task_root.mkdir()
+    (reg.task_root / "report.tex").write_text("\\documentclass{article}\n\\begin{document}Q&A \"x\"\\end{document}")
+    res = reg.confirm(reg.prepare("overleaf.open", {"path": "report.tex"}).confirmation_token)
+    assert res.success and fake.spawns[-1]["cmd"][-1].startswith("file://")
+    page = Path(res.data["page"]).read_text()
+    assert 'action="https://www.overleaf.com/docs"' in page and 'name=snip' in page and "Q&amp;A &quot;x&quot;" in page
+    with pytest.raises(ValueError):
+        reg.prepare("overleaf.open", {"path": "../secret.tex"})
+
+
+class CoderStub(StubLLM):
+    def __init__(self, plans, delay=0.0, assess=()):
+        super().__init__(plans)
+        self.delay, self.assessments, self.code_calls = delay, list(assess), 0
+
+    def complete(self, prompt, params=None, model=None, **kw):
+        if "Return ONLY the file contents" in prompt:
+            time.sleep(self.delay)
+            self.code_calls += 1
+            return SimpleNamespace(text="def main():\n    print('generated by coder')\n", cached=False, elapsed_s=0.01, model=model)
+        if "fully accomplished" in prompt:
+            text = json.dumps(self.assessments.pop(0) if self.assessments else {"satisfied": True})
+            return SimpleNamespace(text=text, cached=False, elapsed_s=0.01, model=model)
+        return super().complete(prompt, params, model, **kw)
+
+
+def test_coding_project_is_built_by_parallel_coder_agents_and_opened_in_vscode(tmp_path, apps_dir):
+    (apps_dir / "code.desktop").write_text(CODE)
+    plan = json.dumps({"summary": "flask todo", "steps": [
+        {"action": "write_file", "path": "app/main.py", "brief": "flask app with /todos"},
+        {"action": "write_file", "path": "app/models.py", "brief": "todo dataclass"},
+        {"action": "write_file", "path": "app/utils.py", "brief": "helpers"},
+        {"action": "write_file", "path": "README.md", "content": "# Todo app\nRun with flask."},
+        {"action": "project.open", "args": {}}]})
+    llm, fake = CoderStub([plan], delay=0.3), FakeDesktop()
+    fake.window_class = "Code"
+    pipe = live_pipeline(tmp_path, apps_dir, fake, llm, ablation={"iars": False, "rules": False, "memory": False},
+                         projects_root=tmp_path / "projects", max_followups=0)
+    pipe.model_center.models["qwen2.5-coder:3b"] = pipe.model_center.models["qwen3:4b"]
+    started = time.time()
+    rec = run(pipe, "create a flask todo project")
+    elapsed = time.time() - started
+    proj = Path(rec.workspace)
+    assert rec.status == "done", rec.verification
+    assert proj.parent == tmp_path / "projects"
+    assert "generated by coder" in (proj / "app" / "main.py").read_text() and (proj / "README.md").read_text().startswith("# Todo")
+    assert llm.code_calls == 3 and elapsed < 0.8                       # 3 files x 0.3 s ran concurrently, not 0.9 s
+    assert fake.spawns[-1]["cmd"][-1] == str(proj)                     # VS Code opened on the project folder
+
+
+def test_goal_is_followed_up_inside_the_app_until_the_critic_is_satisfied(tmp_path, apps_dir):
+    tree, link, _ = youtube_tree()
+    plans = ['{"steps":[{"action":"web.search","args":{"query":"lofi beats","site":"youtube"}}]}',
+             '{"steps":[{"action":"ui.click","args":{"name":"Lofi beats"}}]}']
+    llm = CoderStub(plans, assess=[{"satisfied": False, "remaining": "click the first video"}, {"satisfied": True}])
+    fake = FakeDesktop()
+    fake.window_title = "lofi beats - YouTube — Mozilla Firefox"
+    pipe = live_pipeline(tmp_path, apps_dir, fake, llm, ablation={"iars": False, "rules": False, "memory": False},
+                         desktop=make_registry(tmp_path, apps_dir, fake, tracker=AtspiTracker(FakeAdapter(tree))))
+    rec = run(pipe, "play lofi beats on youtube")
+    assert rec.status == "done", rec.verification
+    assert rec.execution["followups"] == 1 and link.done == [0]       # it kept working inside Firefox and clicked the video
+    assert [s["action"] for s in rec.execution["steps"]] == ["web.search", "ui.click"]
+
+
+def test_denied_action_stops_the_task_instead_of_relaunching(tmp_path, apps_dir):
+    llm = StubLLM(['{"steps":[{"action":"app.launch","args":{"app":"Firefox"}}]}'])
+    pipe = live_pipeline(tmp_path, apps_dir, FakeDesktop(spawn_creates_window=False), llm, ablation={"iars": False, "rules": False, "memory": False},
+                         confirm_timeout=10.0)
+    pipe.auto_approve_reversible = False
+    rec = TaskRecord(task_id="d", goal="launch a browser", created=time.time())
+    pipe.tasks["d"] = rec
+    worker = threading.Thread(target=pipe.run_task, args=(rec,))
+    worker.start()
+    for _ in range(100):
+        if rec.pending:
+            break
+        time.sleep(0.05)
+    pipe.resolve_confirmation("d", False)
+    worker.join(5)
+    assert rec.status == "failed" and rec.execution["replans"] == 0 and llm.plan_calls == 1

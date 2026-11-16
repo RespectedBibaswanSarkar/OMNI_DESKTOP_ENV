@@ -175,8 +175,14 @@ def desktop_windows() -> dict[str, Any]:
 def desktop_status() -> dict[str, Any]:
     """Is window control wired up? (GNOME: is the OMNI Bridge extension reachable?)"""
     desk = app.state.pipeline.desktop
-    return {**desk.backend.status(), "apps_indexed": len(desk.apps.entries()),
+    return {**desk.backend.status(), "layers": desk.layers(), "apps_indexed": len(desk.apps.entries()),
             "learned_plans": len(app.state.pipeline.plans.entries), "routines": app.state.pipeline.plans.names()}
+
+
+@app.get("/api/desktop/state")
+def desktop_state() -> dict[str, Any]:
+    """Live view of what is running: windows, active app's visible controls, processes, tracking layers."""
+    return app.state.pipeline.desktop.app_state()
 
 
 @app.post("/api/desktop/run")

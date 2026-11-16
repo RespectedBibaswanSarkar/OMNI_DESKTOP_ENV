@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from omni.desktop.apps import normalize_query
+
 _SPLIT = re.compile(r"\s*(?:,|;|\band then\b|\bthen\b|\band\b)\s+", re.I)
 _URL = re.compile(r"^(?:go to|open|visit|browse to)\s+(https?://\S+|(?:www\.)?[\w-]+(?:\.[\w-]+)+\S*)$", re.I)
 _WORKSPACE = re.compile(r"^(?:go to|switch to|goto|move to|show)?\s*workspace\s+(\d{1,2})$", re.I)
@@ -57,7 +59,7 @@ def _clause(text: str) -> dict | None:
         url = m.group(1)
         return {"action": "url.open", "args": {"url": url if url.lower().startswith("http") else f"https://{url}"}}
     if m := _LAUNCH.match(t):
-        return {"action": "app.launch", "args": {"app": m.group("app")}}
+        return {"action": "app.launch", "args": {"app": normalize_query(m.group("app")) or m.group("app")}}
     if m := _FOCUS.match(t):
         return {"action": "window.focus", "args": {"target": m.group("t")}}
     return None

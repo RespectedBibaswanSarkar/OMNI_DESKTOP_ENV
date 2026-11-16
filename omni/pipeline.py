@@ -11,6 +11,7 @@ stage; nothing is computed and discarded.
 """
 from __future__ import annotations
 
+import concurrent.futures as cf
 import json
 import os
 import re
@@ -178,6 +179,9 @@ class OmniPipeline:
         plan_memory: PlanMemory | None = None,
         notify_results: bool = False,
         speak_results: bool = False,
+        projects_root: str | Path | None = None,
+        max_followups: int = 2,
+        gen_workers: int = 3,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.isolated_root = self.workspace_root / "isolated"
@@ -206,6 +210,9 @@ class OmniPipeline:
         self.collector = make_collector(self.desktop.backend)
         self.plans = plan_memory if plan_memory is not None else PlanMemory(self.workspace_root / ".omni" / "plans.json")
         self.last_plan: list[dict[str, Any]] = []
+        self.projects_root = Path(projects_root) if projects_root else Path.home() / "OMNI_Projects"
+        self.max_followups = max(0, int(max_followups))
+        self.gen_workers = max(1, int(gen_workers))
         self.notify_results = bool(notify_results)
         self.speak_results = bool(speak_results)
         self.auto_approve_reversible = bool(auto_approve_reversible)
@@ -415,23 +422,49 @@ class OmniPipeline:
                      fallback=gen_meta["fallback"], elapsed_s=gen_meta["elapsed_s"], source=gen_meta.get("source"))
         self._checkpoint(record)
 
-        # 7+8. Execute -> independent verification -> bounded closed-loop replan ---------
+        # 7+8. Execute -> verify on real app state -> replan on failure -> follow up until the goal is met
         record.status = "executing"
         record.stage("execution", "active")
         exec_root = self.isolated_root / record.task_id
+        project = next((st for st in plan if st["action"] == "project.open"), None)
+        if project is not None:                       # a coding project lives in a real, fresh folder
+            exec_root = self._new_project_dir(record.goal)
         exec_root.mkdir(parents=True, exist_ok=True)
+        self.desktop.task_root = exec_root
         record.workspace = str(exec_root)
         ledger: list[dict[str, Any]] = []
+        failed_keys: set[str] = set()
         steps_now = plan
-        attempt = 0
+        attempt = follow = 0
         while True:
             results = self._execute_plan(steps_now, exec_root, record)
             ledger.extend({"step": st, "result": rs, "superseded": False} for st, rs in zip(steps_now, results))
             record.status = "verifying"
-            record.stage("verification", "active", attempt=attempt)
+            record.stage("verification", "active", attempt=attempt, follow=follow)
             active = [e for e in ledger if not e["superseded"]]
             verif = self._verify([e["step"] for e in active], exec_root, [e["result"] for e in active], goal=record.goal)
-            if verif["passed"] or attempt >= self.max_replans or not self.multimodel.live:
+            declined = any(("denied by user" in e["result"]["detail"] or "timed out" in e["result"]["detail"]) for e in active)
+            if declined or not self.multimodel.live:
+                break
+            if verif["passed"]:
+                # goal-level check on the live application state; continue if work remains
+                if follow >= self.max_followups or not any(e["step"]["action"] in self.desktop.ACTIONS for e in active):
+                    break
+                state = self.desktop.app_state()
+                text = self._state_text(state)
+                verdict = self.multimodel.assess(record.goal, text) if text else None
+                record.stage("followup-check", "done", satisfied=None if verdict is None else bool(verdict.get("satisfied")))
+                if verdict is None or verdict.get("satisfied", True):
+                    break
+                follow += 1
+                feedback = "Goal not finished yet. Remaining: " + str(verdict.get("remaining", "unknown"))[:200] + ". Current state: " + text[:300]
+                new_steps = self._replan(record, model_tag, agent_id, feedback)
+                new_steps = [st for st in new_steps if json.dumps(st, sort_keys=True) not in failed_keys and st["action"] != "reply"] if new_steps else []
+                if not new_steps:
+                    break
+                steps_now = new_steps
+                continue
+            if attempt >= self.max_replans:
                 break
             failing = [e for e in active if e["step"]["action"] in self.desktop.ACTIONS and not e["result"].get("verified", e["result"]["success"])]
             if not failing:
@@ -439,18 +472,14 @@ class OmniPipeline:
             feedback = "; ".join(f"{e['step']['action']} {e['result']['path']} -> {e['result']['detail']}" for e in failing)[:600]
             for e in failing:
                 e["superseded"] = True
+                failed_keys.add(json.dumps(e["step"], sort_keys=True))
             attempt += 1
-            record.status = "executing"
             record.stage("replan", "active", attempt=attempt, feedback=feedback)
-            self.inference_active = True
-            try:
-                record.observation = self._observe(record, agent_id, None)
-                steps_now, meta2 = self._generate_plan(record, model_tag, agent_id, observation=record.observation, feedback=feedback)
-            finally:
-                self.inference_active = False
-            if meta2.get("fallback") or not steps_now:
+            new_steps = self._replan(record, model_tag, agent_id, feedback)
+            new_steps = [st for st in (new_steps or []) if json.dumps(st, sort_keys=True) not in failed_keys]   # never repeat a failed step
+            if not new_steps:
                 break
-            record.plan = record.plan + steps_now
+            steps_now = new_steps
         active = [e for e in ledger if not e["superseded"]]
         executed = sum(1 for e in active if e["result"]["success"])
         record.execution = {
@@ -459,9 +488,10 @@ class OmniPipeline:
             "executed": executed,
             "total": len(active),
             "replans": attempt,
+            "followups": follow,
         }
         exec_results = [e["result"] for e in active]
-        record.stage("execution", "done", executed=executed, total=len(active), replans=attempt)
+        record.stage("execution", "done", executed=executed, total=len(active), replans=attempt, followups=follow)
         self._checkpoint(record)
         record.verification = verif
         passed = bool(verif["passed"])
@@ -545,11 +575,12 @@ class OmniPipeline:
     # ------------------------------------------------------------ observation
     def _observe(self, record: TaskRecord, agent_id: str, snapshot) -> dict[str, Any]:  # noqa: ANN001
         """Structured view of the desktop fed to the planner (and used for replans)."""
-        obs: dict[str, Any] = {"windows": [], "focused": None, "screen": None,
-                               "backend": self.desktop.backend.name}
+        obs: dict[str, Any] = {"windows": [], "focused": None, "screen": None, "backend": self.desktop.backend.name,
+                               "ui": None, "processes": [], "layers": {}}
         try:
-            obs["windows"] = self.desktop.clients()[:12]
-            active = self.desktop.backend.active_window()
+            state = self.desktop.app_state()
+            obs.update(windows=state["windows"], ui=state["ui"], processes=state["processes"], layers=state["layers"])
+            active = state["active"]
             if active:
                 obs["focused"] = {"class": active["class"], "title": active["title"][:80], "workspace": active["workspace"]}
         except Exception:  # noqa: BLE001 - observation is best effort
@@ -579,7 +610,8 @@ class OmniPipeline:
                 "steps": {"type": "array", "maxItems": MAX_PLAN_STEPS, "items": {
                     "type": "object",
                     "properties": {"action": {"type": "string", "enum": actions},
-                                   "args": {"type": "object"}, "path": {"type": "string"}, "content": {"type": "string"}},
+                                   "args": {"type": "object"}, "path": {"type": "string"}, "content": {"type": "string"},
+                                   "brief": {"type": "string"}},
                     "required": ["action"]}},
             },
             "required": ["steps"],
@@ -590,13 +622,21 @@ class OmniPipeline:
         actions = "\n".join(f"- {a['name']} {a['args']}: {a['description']}" for a in self.desktop.describe())
         windows = "; ".join(f"[{w['workspace']}] {w['class']}: {w['title'][:40]}" for w in obs.get("windows", [])) or "none"
         extra = f"\nScreen: {obs['screen']}" if obs.get("screen") else ""
+        ui = obs.get("ui") or {}
+        if ui.get("items"):
+            extra += f"\nActive app: {ui.get('app')} — {ui.get('window')}; controls: " + "; ".join(f"{i['role']}:{i['name'][:30]}" for i in ui["items"][:14])
+        if obs.get("processes"):
+            extra += "\nRunning apps: " + ", ".join(obs["processes"][:15])
         fb = f"\nPrevious attempt failed: {feedback}. Fix it using only the allowed actions." if feedback else ""
         return (
             "You are OMNI, an agent controlling a Linux Hyprland desktop. Turn the goal into 1-5 steps.\n"
             f"Allowed actions:\n{actions}\n"
             "File steps use {\"action\": \"write_file\", \"path\": \"rel/path\", \"content\": \"...\"} (mkdir/write_file/write_json).\n"
             "If the user only asks a question or no action is needed, answer with one step {\"action\": \"reply\", \"args\": {\"text\": \"...\"}}.\n"
-            "Prefer reading state first (system.info, window.list) instead of guessing. Never invent app names: use the installed apps below.\n"
+            "Prefer reading state first (system.info, window.list, ui.read) instead of guessing. Never invent app names: use the installed apps below, or an app TYPE such as 'text editor', 'web browser', 'code editor'.\n"
+            "For long files (code, LaTeX) give write_file a short \"brief\" instead of \"content\": a specialist coder model writes the full file.\n"
+            "To start a coding project: write_file steps for the structure, then project.open. For LaTeX: write_file report.tex with a brief, then overleaf.open. To play a song/video: web.search with site youtube and play true.\n"
+            "After opening something, use window.wait or ui.read to confirm it, then ui.click / ui.type to continue inside the app.\n"
             f"Installed apps (sample): {', '.join(self._app_hints(record.goal))}\n"
             f"Desktop: {obs.get('backend', '?')}. Open windows: {windows}\nFocused: {obs.get('focused')}{extra}{fb}\n"
             f"Goal: {record.goal}\n"
@@ -646,12 +686,18 @@ class OmniPipeline:
             if not path or ".." in Path(path).parts or path.startswith(("/", "~")):
                 continue
             content = str(step.get("content", ""))
+            brief = str(step.get("brief", "")).strip()[:600]
             if action == "write_json":
                 try:
                     content = json.dumps(json.loads(content), indent=2)
                 except json.JSONDecodeError:
                     continue
-            steps.append({"action": action, "path": path, "content": content[:1500]})
+            if action == "write_file" and not content.strip() and not brief:
+                continue
+            entry = {"action": action, "path": path, "content": content[:12000]}
+            if brief:
+                entry["brief"] = brief
+            steps.append(entry)
         return steps
 
     def _generate_plan(
@@ -712,18 +758,11 @@ class OmniPipeline:
         structured = bool(steps)
         if structured:
             meta["summary"] = str(parsed.get("summary", ""))[:300]
-            # coder role: hand code-file bodies to the code model
-            if self.multimodel.live:
-                for st in steps:
-                    if st["action"] == "write_file":
-                        better = self.multimodel.refine_code(record.goal, st["path"], st.get("content", ""))
-                        if better:
-                            st["content"] = better
-                            meta["coder_used"] = True
+            pass
         fallback = False
         if not steps:
             fallback = True
-            if desktop_mode:
+            if agent_id == "desktop-control" or self.multimodel.live:
                 steps = []     # never fake a desktop action: an honest empty plan fails verification
             else:
                 steps = [dict(s, path=s["path"]) for s in FALLBACK_STEPS]
@@ -788,45 +827,101 @@ class OmniPipeline:
         return {"action": action, "path": label, "success": result.success, "detail": result.output[:400],
                 "kind": "desktop", "tier": result.tier}
 
+    def _replan(self, record: TaskRecord, model_tag: str | None, agent_id: str, feedback: str) -> list[dict[str, Any]]:
+        self.inference_active = True
+        try:
+            record.observation = self._observe(record, agent_id, None)
+            steps, meta = self._generate_plan(record, model_tag, agent_id, observation=record.observation, feedback=feedback)
+        finally:
+            self.inference_active = False
+        if meta.get("fallback"):
+            return []
+        record.plan = record.plan + steps
+        return steps
+
+    def _new_project_dir(self, goal: str) -> Path:
+        slug = (re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:40] or "project")
+        self.projects_root.mkdir(parents=True, exist_ok=True)
+        candidate, n = self.projects_root / slug, 2
+        while candidate.exists() and any(candidate.iterdir()):
+            candidate = self.projects_root / f"{slug}-{n}"
+            n += 1
+        return candidate
+
+    @staticmethod
+    def _state_text(state: dict[str, Any]) -> str:
+        ui = state.get("ui") or {}
+        wins = "; ".join(f"{w['class']}: {w['title'][:50]}" for w in state.get("windows", [])[:8])
+        items = ", ".join(f"{i['name'][:30]}" for i in (ui.get("items") or [])[:15])
+        procs = ", ".join(state.get("processes", [])[:12])
+        parts = [f"Windows: {wins}" if wins else "", f"Active: {ui.get('app')} — {ui.get('window')}; visible: {items}" if ui.get("window") else "",
+                 f"Running: {procs}" if procs else ""]
+        return " | ".join(p for p in parts if p)
+
     def _execute_plan(self, steps: list[dict[str, Any]], root: Path, record: TaskRecord | None = None) -> list[dict[str, Any]]:
-        results = []
-        for step in steps:
-            action = step["action"]
-            if action == "reply":
-                text = step["args"]["text"]
-                results.append({"action": "reply", "path": "", "success": True, "detail": text, "kind": "meta", "verified": True})
-                continue
-            if action == "routine.save":
-                name = step["args"]["name"]
-                ok = self.plans.save_named(name, list(self.last_plan))
-                results.append({"action": action, "path": name, "success": ok, "kind": "meta", "verified": ok,
-                                "detail": f"saved routine '{name}' ({len(self.last_plan)} steps)" if ok else "nothing to save yet: run a task first"})
-                continue
-            if action in self.desktop.ACTIONS:
-                results.append(self._execute_desktop(step, record))
-                continue
-            rel, content = step["path"], step.get("content", "")
-            path = (root / rel).resolve()
-            ok = False
-            detail = ""
-            try:
-                if not str(path).startswith(str(root.resolve())):
-                    detail = "path escapes isolated workspace"
-                elif action == "mkdir":
-                    path.mkdir(parents=True, exist_ok=True)
-                    ok = path.is_dir()
-                    detail = f"created {rel}"
-                elif action in {"write_file", "write_json"}:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(content, encoding="utf-8")
-                    ok = path.is_file() and path.stat().st_size > 0
-                    detail = f"wrote {rel} ({len(content)} chars)"
-                else:
-                    detail = f"unsupported action {action}"
-            except OSError as exc:
-                detail = f"OSError: {exc}"
-            results.append({"action": action, "path": rel, "success": ok, "detail": detail})
+        """Run steps in order. File contents are written by specialist coder agents IN PARALLEL with the
+        desktop steps (apps open while the code is being generated); a step waits only for its own file."""
+        futures: dict[int, cf.Future] = {}
+        pool = None
+        gen_idx = [i for i, st in enumerate(steps) if st["action"] == "write_file" and self.multimodel.live
+                   and (st.get("brief") or not st.get("content", "").strip() or self._is_code(st["path"]))]
+        if gen_idx:
+            workers = self.gen_workers if self.multimodel.coload_ok(["code"]) else 1
+            pool = cf.ThreadPoolExecutor(max_workers=workers, thread_name_prefix="omni-coder")
+            for i in gen_idx:
+                st = steps[i]
+                futures[i] = pool.submit(self.multimodel.generate_file, record.goal if record else "", st["path"], st.get("brief", ""), st.get("content", ""))
+        results: list[dict[str, Any]] = []
+        try:
+            for i, step in enumerate(steps):
+                action = step["action"]
+                if action == "reply":
+                    results.append({"action": "reply", "path": "", "success": True, "detail": step["args"]["text"], "kind": "meta", "verified": True})
+                    continue
+                if action == "routine.save":
+                    name = step["args"]["name"]
+                    ok = self.plans.save_named(name, list(self.last_plan))
+                    results.append({"action": action, "path": name, "success": ok, "kind": "meta", "verified": ok,
+                                    "detail": f"saved routine '{name}' ({len(self.last_plan)} steps)" if ok else "nothing to save yet: run a task first"})
+                    continue
+                if action in self.desktop.ACTIONS:
+                    if action in {"project.open", "overleaf.open"}:
+                        for f in futures.values():          # these need every generated file on disk first
+                            f.result()
+                    results.append(self._execute_desktop(step, record))
+                    continue
+                rel, content = step["path"], step.get("content", "")
+                if i in futures:
+                    content = futures[i].result() or content
+                    step["content"] = content
+                path = (root / rel).resolve()
+                ok, detail = False, ""
+                try:
+                    if not str(path).startswith(str(root.resolve())):
+                        detail = "path escapes isolated workspace"
+                    elif action == "mkdir":
+                        path.mkdir(parents=True, exist_ok=True)
+                        ok = path.is_dir()
+                        detail = f"created {rel}"
+                    elif action in {"write_file", "write_json"}:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(content, encoding="utf-8")
+                        ok = path.is_file() and path.stat().st_size > 0
+                        detail = f"wrote {rel} ({len(content)} chars)" + (" [coder agent]" if i in futures else "")
+                    else:
+                        detail = f"unsupported action {action}"
+                except OSError as exc:
+                    detail = f"OSError: {exc}"
+                results.append({"action": action, "path": rel, "success": ok, "detail": detail})
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=True)
         return results
+
+    @staticmethod
+    def _is_code(path: str) -> bool:
+        from omni.multimodel import CODE_EXT
+        return ("." + path.rsplit(".", 1)[-1].lower()) in CODE_EXT if "." in path else False
 
     def _verify(self, steps: list[dict[str, Any]], root: Path, exec_results: list[dict[str, Any]], goal: str = "") -> dict[str, Any]:
         checks = []

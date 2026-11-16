@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import html
+import json
 import os
 import re
 import secrets
@@ -7,6 +10,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +18,7 @@ from typing import Any, Callable, Sequence
 
 from omni.desktop.apps import AppEntry, AppIndex
 from omni.desktop.backends import DesktopBackend, detect_backend
+from omni.desktop.tracker import AtspiTracker, ProcessTracker
 
 
 @dataclass(frozen=True)
@@ -63,6 +68,13 @@ class DesktopActionRegistry:
         "window.list": ActionSpec("read-only", False, "List open windows (id, class, title, workspace)", "{}"),
         "notify.send": ActionSpec("read-only", False, "Show a desktop notification", '{"title": str, "body"?: str}'),
         "speech.say": ActionSpec("read-only", False, "Speak text aloud", '{"text": str}'),
+        "ui.read": ActionSpec("read-only", False, "Read what is on screen in the active window (controls, labels, title)", "{}"),
+        "window.wait": ActionSpec("read-only", False, "Wait until a window/app appears or its title contains text", '{"target": str, "title_contains"?: str, "timeout"?: 1-30}'),
+        "ui.click": ActionSpec("reversible", True, "Click/press a control by its visible name inside the active app", '{"name": str, "role"?: str, "nth"?: int}'),
+        "ui.type": ActionSpec("consequential", True, "Type text into a field of the active app", '{"text": str, "name"?: str}'),
+        "web.search": ActionSpec("reversible", True, "Search the web (or play the top YouTube result) in the default browser", '{"query": str, "site"?: str, "play"?: bool}'),
+        "project.open": ActionSpec("reversible", True, "Open the project folder just created in a code editor", '{"app"?: str}'),
+        "overleaf.open": ActionSpec("reversible", True, "Open a .tex file from this task in Overleaf", '{"path": str, "engine"?: "pdflatex|xelatex|lualatex"}'),
         "app.launch": ActionSpec("reversible", True, "Launch an installed application by name", '{"app": str}'),
         "window.focus": ActionSpec("reversible", True, "Focus a window by class/title text", '{"target": str}'),
         "window.move": ActionSpec("reversible", True, "Move a window to a workspace", '{"target": str, "workspace": 1-10}'),
@@ -100,19 +112,26 @@ class DesktopActionRegistry:
         backend: DesktopBackend | None = None,
         user_dirs: list[Path] | None = None,
         clock: Callable[[], datetime] = datetime.now,
+        tracker: Any = None,
+        procs: ProcessTracker | None = None,
+        embedder: Callable[[list[str]], Any] | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.runner = runner or subprocess.run
         self.popen = popen or subprocess.Popen
         self._which = which or shutil.which
         self.backend = backend if backend is not None else detect_backend(self.runner, self._which)
-        self.apps = apps if apps is not None else AppIndex()
+        self.apps = apps if apps is not None else AppIndex(mime_default=self._mime_default, embedder=embedder)
         self.launch_wait = max(0.0, float(launch_wait))
         self._sleep = sleep
         self.token_ttl = max(5.0, float(token_ttl))
         self.user_dirs = user_dirs if user_dirs is not None else [Path.home() / d for d in USER_DIRS] + [Path.home()]
         self.clock = clock
         self._pending: dict[str, tuple[str, dict, float]] = {}
+        self.tracker = tracker if tracker is not None else (getattr(self.backend, "tracker", None) or AtspiTracker.default())
+        self.procs = procs if procs is not None else ProcessTracker()
+        self.task_root: Path | None = None            # set by the pipeline: where this task's files live
+        self._launched: dict[str, float] = {}        # app key -> launch time (for process-age checks)
 
     # ------------------------------------------------------------ describe
     def describe(self) -> list[dict]:
@@ -177,6 +196,33 @@ class DesktopActionRegistry:
         if action == "speech.say":
             tool = "spd-say" if self._which("spd-say") else "espeak-ng"
             return self._run(action, spec, [tool, "--", args["text"]] if tool == "spd-say" else [tool, args["text"]])
+        if action == "ui.read":
+            if self.tracker is None:
+                return ActionResult(action, t, False, "Accessibility tree unavailable (enable: gsettings set org.gnome.desktop.interface toolkit-accessibility true).")
+            state = self.tracker.read(limit=40)
+            text = f"{state['app']} — {state['window']}\n" + "\n".join(f"[{i['role']}] {i['name']}" for i in state["items"])
+            return ActionResult(action, t, state["window"] is not None, text or "Nothing readable.", data=state)
+        if action == "window.wait":
+            found = self._wait_window(args["target"], args.get("title_contains"), float(args.get("timeout", 8)))
+            return ActionResult(action, t, found is not None, f"window {found['class']}: {found['title'][:70]}" if found else "window did not appear in time", data=found)
+        if action == "ui.click":
+            if self.tracker is None:
+                return ActionResult(action, t, False, "Accessibility tree unavailable.")
+            ok, detail = self.tracker.click(args["name"], args.get("role"), None, int(args.get("nth", 0)))
+            return ActionResult(action, t, ok, detail)
+        if action == "ui.type":
+            if self.tracker is not None:
+                ok, detail = self.tracker.type_into(args["text"], args.get("name"))
+                if ok:
+                    return ActionResult(action, t, True, detail)
+            return self._run(action, spec, ["ydotool", "type", "--", args["text"]])      # fallback: synthetic keystrokes
+        if action == "web.search":
+            url = self._search_url(args)
+            return self._spawn(action, spec, ["xdg-open", url], label=url)
+        if action == "project.open":
+            return self._open_project(action, spec, args.get("app"))
+        if action == "overleaf.open":
+            return self._open_overleaf(action, spec, args)
         if action == "app.launch":
             return self._launch(action, spec, args["app"])
         if action in {"window.focus", "window.close", "window.move"}:
@@ -273,6 +319,33 @@ class DesktopActionRegistry:
             text = args.get("text")
             if not isinstance(text, str) or not text.strip() or len(text) > 400:
                 raise ValueError("text must be 1-400 characters.")
+        elif action == "ui.read":
+            pass
+        elif action == "window.wait":
+            tgt, tc, to = args.get("target"), args.get("title_contains", ""), args.get("timeout", 8)
+            if not isinstance(tgt, str) or not tgt.strip() or len(tgt) > 100 or not isinstance(tc, str) or len(tc) > 100:
+                raise ValueError("target (<=100 chars) required; title_contains must be text.")
+            if not isinstance(to, (int, float)) or isinstance(to, bool) or not 1 <= to <= 30:
+                raise ValueError("timeout must be 1-30 seconds.")
+        elif action == "ui.click":
+            nm = args.get("name")
+            if not isinstance(nm, str) or not nm.strip() or len(nm) > 120 or not isinstance(args.get("nth", 0), int):
+                raise ValueError("name (<=120 chars) required.")
+        elif action == "ui.type":
+            tx = args.get("text")
+            if not isinstance(tx, str) or not tx or len(tx) > 2000 or any(ord(c) < 32 and c not in "\n\t" for c in tx):
+                raise ValueError("text must be 1-2000 printable characters.")
+        elif action == "web.search":
+            q, site = args.get("query"), args.get("site", "")
+            if not isinstance(q, str) or not q.strip() or len(q) > 200 or not isinstance(site, str) or not re.fullmatch(r"[\w.\-]{0,60}", site):
+                raise ValueError("query (<=200 chars) required; site must look like a domain or name.")
+        elif action == "project.open":
+            if args.get("app") is not None and (not isinstance(args["app"], str) or len(args["app"]) > 100):
+                raise ValueError("app must be a short application name or type.")
+        elif action == "overleaf.open":
+            path, eng = args.get("path"), args.get("engine", "pdflatex")
+            if not isinstance(path, str) or not path.endswith(".tex") or ".." in path or path.startswith("/") or eng not in {"pdflatex", "xelatex", "lualatex"}:
+                raise ValueError("path must be a relative .tex file; engine pdflatex|xelatex|lualatex.")
         elif action == "app.launch":
             name = args.get("app")
             if not isinstance(name, str) or not name.strip() or len(name) > 100:
@@ -381,18 +454,106 @@ class DesktopActionRegistry:
             return ["gio", "launch", entry.path]       # lets GNOME associate the window with the app
         return entry.command()
 
-    def _launch(self, action: str, spec: ActionSpec, name: str) -> ActionResult:
+    def _mime_default(self, mime: str) -> str | None:
+        """Installed default handler for a MIME type or URL scheme (`gio mime`)."""
+        exe = self._which("gio")
+        if exe is None:
+            return None
+        try:
+            out = self.runner([exe, "mime", mime], capture_output=True, text=True, timeout=5, check=False).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        m = re.search(r"([\w.\-+]+\.desktop)", out.splitlines()[0] if out.strip() else "")
+        return m.group(1) if m else None
+
+    def _wanted_names(self, target: AppEntry | str) -> set[str]:
+        return target.window_classes() if isinstance(target, AppEntry) else {target.lower()}
+
+    def _running(self, target: AppEntry | str, since: float | None = None) -> list[dict]:
+        names = target.process_names() if isinstance(target, AppEntry) else {str(target).lower()}
+        return self.procs.find(names, since)
+
+    def _launch(self, action: str, spec: ActionSpec, name: str, extra: Sequence[str] = ()) -> ActionResult:
         target = self._resolve_app(name)
         if target is None:
             return ActionResult(action, spec.tier, False, f"Application not found: {name}")
-        command, label = (self._entry_command(target), target.name) if isinstance(target, AppEntry) else ([target], name)
+        label = target.name if isinstance(target, AppEntry) else name
+        key = target.desktop_id if isinstance(target, AppEntry) else str(target)
+        if not extra:                          # idempotent: never start a second copy of something already open
+            row = self._window_matches(target, self.clients())
+            if row or self._running(target):
+                if row and row["address"].isdigit() or (row and row["address"].startswith("0x")):
+                    self.backend.focus(row["address"])
+                return ActionResult(action, spec.tier, True, f"{label} is already running" + (f"; window {row['address']}" if row else ""),
+                                    data={"window": row, "app": label, "already_running": True})
+        command = (self._entry_command(target) if isinstance(target, AppEntry) else [target]) + list(extra)
+        self._launched[key] = time.time()
         result = self._spawn(action, spec, command, label=label)
         if not result.success:
             return result
         window = self._await_window(target, self.launch_wait)
-        suffix = (f"; window {window['address']} [{window['class']}] on workspace {window['workspace']}"
-                  if window else "; no window detected yet")
+        suffix = (f"; window {window['address']} [{window['class']}]" if window
+                  else "; window not seen yet (process tracking continues)")
         return ActionResult(action, spec.tier, True, result.output + suffix, data={"window": window, "app": label})
+
+    def _wait_window(self, target: str, title_contains: str | None, timeout: float) -> dict | None:
+        deadline, needle = time.monotonic() + timeout, (title_contains or "").lower()
+        while True:
+            for row in self.clients():
+                hay = (row["class"] + " " + row["title"]).lower()
+                if target.lower() in hay and (not needle or needle in row["title"].lower()):
+                    return row
+            if time.monotonic() >= deadline:
+                return None
+            self._sleep(0.3)
+
+    def _search_url(self, args: dict) -> str:
+        q, site = args["query"].strip(), (args.get("site") or "").strip().lower()
+        enc = urllib.parse.quote_plus(q)
+        if "youtube" in site:
+            if args.get("play") and self._which("yt-dlp"):          # resolve the top hit so it can start playing
+                try:
+                    out = self.runner([self._which("yt-dlp"), "--no-warnings", "--get-id", "--default-search", "ytsearch1:", q],
+                                      capture_output=True, text=True, timeout=25, check=False).stdout.strip().splitlines()
+                    if out and re.fullmatch(r"[\w\-]{11}", out[0]):
+                        return f"https://www.youtube.com/watch?v={out[0]}&autoplay=1"
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            return f"https://www.youtube.com/results?search_query={enc}"
+        if site and "." in site:
+            return f"https://www.google.com/search?q={urllib.parse.quote_plus('site:' + site + ' ' + q)}"
+        return f"https://www.google.com/search?q={enc}"
+
+    def _open_project(self, action: str, spec: ActionSpec, app: str | None) -> ActionResult:
+        if self.task_root is None or not self.task_root.is_dir():
+            return ActionResult(action, spec.tier, False, "No project folder exists for this task.")
+        for wanted in ([app] if app else []) + ["code editor", "text editor"]:
+            entry = self.apps.resolve(wanted)
+            if entry is not None:
+                res = self._launch(action, spec, entry.name, extra=[str(self.task_root)])
+                return ActionResult(action, spec.tier, res.success, f"{res.output}; folder {self.task_root}", data={"app": entry.name, "folder": str(self.task_root)})
+        return self._spawn(action, spec, ["xdg-open", str(self.task_root)], label=str(self.task_root))
+
+    def _open_overleaf(self, action: str, spec: ActionSpec, args: dict) -> ActionResult:
+        base = self.task_root or self.workspace_root
+        tex = (base / args["path"]).resolve()
+        if not str(tex).startswith(str(base.resolve())) or not tex.is_file():
+            return ActionResult(action, spec.tier, False, f"{args['path']} not found in this task's folder.")
+        src = tex.read_text(encoding="utf-8", errors="replace")
+        if len(src) > 400_000:
+            return ActionResult(action, spec.tier, False, "LaTeX source too large for Overleaf's open-in-Overleaf form.")
+        form = ("<!doctype html><meta charset=utf-8><title>Opening Overleaf…</title><p>Opening Overleaf…</p>"
+                '<form id=f action="https://www.overleaf.com/docs" method="post">'
+                f'<input type=hidden name=snip_name value="{html.escape(tex.stem, quote=True)}">'
+                f'<input type=hidden name=engine value="{args.get("engine", "pdflatex")}">'
+                f'<input type=hidden name=snip value="{html.escape(src, quote=True)}"></form>'
+                "<script>document.getElementById('f').submit()</script>")
+        out_dir = self.workspace_root / ".omni"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        page = out_dir / f"overleaf_{hashlib.sha1(src.encode()).hexdigest()[:10]}.html"
+        page.write_text(form, encoding="utf-8")
+        res = self._spawn(action, spec, ["xdg-open", page.as_uri()], label="Overleaf")
+        return ActionResult(action, spec.tier, res.success, res.output + f"; source {tex.name} ({len(src)} chars) sent to Overleaf", data={"tex": str(tex), "page": str(page)})
 
     def _await_window(self, entry: AppEntry | str, timeout: float) -> dict | None:
         deadline = time.monotonic() + timeout
@@ -478,23 +639,73 @@ class DesktopActionRegistry:
         return ActionResult("system.info", spec.tier, True, text, data={"what": what})
 
     # ---------------------------------------------------------- verification
+    def layers(self) -> dict[str, bool]:
+        base = self.backend.layers() if hasattr(self.backend, "layers") else {"bridge": self.backend.available(), "atspi": False}
+        base = dict(base)
+        base["atspi"] = bool(base.get("atspi") or (self.tracker is not None and self.tracker.available()))
+        base["proc"] = True
+        return base
+
+    def _window_layer(self) -> bool:
+        lay = self.layers()
+        return bool(lay.get("bridge") or lay.get("atspi"))
+
+    def _nav_tokens(self, args: dict, action: str) -> set[str]:
+        if action == "web.search":
+            raw = f"{args.get('site', '')} {args['query']}"
+        elif action == "url.open":
+            u = urllib.parse.urlparse(args["url"])
+            raw = u.netloc + " " + urllib.parse.unquote_plus(u.query)
+        else:
+            raw = args.get("path", "overleaf")
+        return {w for w in re.findall(r"[a-z0-9]{3,}", raw.lower()) if w not in {"www", "com", "org", "https", "http", "search", "query", "results", "watch", "autoplay"}}
+
     def verify(self, action: str, args: dict) -> dict | None:
         """Independent post-condition check. ``None`` means no check exists."""
-        if action == "app.launch":
-            target = self._resolve_app(args["app"])
+        if action in {"app.launch", "project.open"}:
+            name = args.get("app") if action == "app.launch" else (args.get("app") or "code editor")
+            target = self._resolve_app(name) or (self._resolve_app("text editor") if action == "project.open" else None)
             if target is None:
                 return {"passed": False, "detail": "app not resolvable"}
+            key = target.desktop_id if isinstance(target, AppEntry) else str(target)
             row = self._await_window(target, self.launch_wait)
-            return {"passed": row is not None, "detail": f"window {row['class']} present" if row else "no matching window appeared"}
+            if row:
+                return {"passed": True, "detail": f"window {row['class']} present", "layer": "window"}
+            procs = self._running(target, self._launched.get(key))
+            if procs or self._running(target):
+                note = "window tracking unavailable" if not self._window_layer() else "window not matched by class"
+                return {"passed": True, "detail": f"process {procs[0]['comm'] if procs else 'running'} (pid {(procs or self._running(target))[0]['pid']}) alive; {note}", "layer": "process"}
+            return {"passed": False, "detail": "neither a window nor a running process was found"}
+        if action in {"url.open", "web.search", "overleaf.open"}:
+            toks = self._nav_tokens(args, action)
+            deadline = time.monotonic() + max(self.launch_wait, 0.0)
+            while True:
+                for row in self.clients():
+                    if any(t in row["title"].lower() for t in toks):
+                        return {"passed": True, "detail": f"window titled {row['title'][:60]!r}", "layer": "window"}
+                if time.monotonic() >= deadline:
+                    break
+                self._sleep(0.3)
+            browser = self.apps.resolve("web browser")
+            if browser is not None and self._running(browser):
+                note = "title not matched yet" if self._window_layer() else "window tracking unavailable"
+                return {"passed": True, "detail": f"browser process alive; {note}", "layer": "process"}
+            return {"passed": False, "detail": "no browser window or process found"}
         if action == "workspace.switch":
             ws = self.backend.active_workspace()
+            if ws is None:
+                return None                                  # cannot observe it: unverified, not failed
             return {"passed": ws == args["workspace"], "detail": f"active workspace is {ws}"}
         if action == "window.focus":
             address = self._resolve_window(args)
             active = self.backend.active_window()
+            if active is None and not self._window_layer():
+                return None
             return {"passed": bool(address) and bool(active) and active["address"] == address,
                     "detail": f"active window {active['address'] if active else None}"}
         if action == "window.close":
+            if not self._window_layer():
+                return None
             gone = self._resolve_window(args) is None
             return {"passed": gone, "detail": "window gone" if gone else "window still open"}
         if action == "window.move":
@@ -502,7 +713,7 @@ class DesktopActionRegistry:
             for row in self.clients():
                 if row["address"] == address:
                     return {"passed": row["workspace"] == args["workspace"], "detail": f"window on workspace {row['workspace']}"}
-            return {"passed": False, "detail": "window not found"}
+            return None if not self._window_layer() else {"passed": False, "detail": "window not found"}
         if action in {"theme.set", "nightlight.set", "dnd.set"}:
             if not self._which("gsettings"):
                 return None
@@ -525,6 +736,29 @@ class DesktopActionRegistry:
                 return None
             return {"passed": level is not None and abs(level - args["percent"]) <= 1, "detail": f"volume now {level}%"}
         return None
+
+    def app_state(self) -> dict[str, Any]:
+        """Everything the planner/critic may need to know about what is happening on the desktop right now."""
+        state: dict[str, Any] = {"layers": self.layers(), "windows": [], "active": None, "ui": None, "processes": []}
+        try:
+            state["windows"] = self.clients()[:12]
+            state["active"] = self.backend.active_window()
+        except Exception:  # noqa: BLE001
+            pass
+        if self.tracker is not None:
+            try:
+                state["ui"] = self.tracker.read(limit=25)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            seen = {}
+            for p in self.procs.snapshot():
+                if re.search(r"/(snap|usr/lib|opt|usr/bin)/", p["cmd"] or "") and p["comm"] not in {"bash", "zsh", "sh", "python3"}:
+                    seen.setdefault(p["comm"], p["pid"])
+            state["processes"] = sorted(seen)[:25]
+        except Exception:  # noqa: BLE001
+            pass
+        return state
 
     def _search(self, query: str, limit: int) -> ActionResult:
         needle = query.casefold()

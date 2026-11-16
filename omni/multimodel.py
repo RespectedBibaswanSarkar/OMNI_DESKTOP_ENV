@@ -23,7 +23,7 @@ from typing import Any
 from omni.llm.client import LLMClient
 from omni.local_models import LocalModelCenter
 
-CODE_EXT = {".py", ".js", ".ts", ".sh", ".c", ".cpp", ".rs", ".go", ".java", ".html", ".css", ".qml", ".toml", ".yaml", ".yml"}
+CODE_EXT = {".tex", ".bib", ".py", ".js", ".ts", ".sh", ".c", ".cpp", ".rs", ".go", ".java", ".html", ".css", ".qml", ".toml", ".yaml", ".yml"}
 INTENT_SCHEMA = {
     "type": "object",
     "properties": {"domain": {"type": "string", "enum": ["desktop", "files", "code", "web", "planning", "chat"]},
@@ -31,6 +31,8 @@ INTENT_SCHEMA = {
     "required": ["domain"],
 }
 CRITIC_SCHEMA = {"type": "object", "properties": {"satisfied": {"type": "boolean"}, "reason": {"type": "string"}},
+                 "required": ["satisfied"]}
+ASSESS_SCHEMA = {"type": "object", "properties": {"satisfied": {"type": "boolean"}, "remaining": {"type": "string"}},
                  "required": ["satisfied"]}
 
 
@@ -89,6 +91,41 @@ class MultiModelRuntime:
 
     def classify_domain(self, goal: str) -> dict | None:
         raw = self._ask("router", f'Classify this request. Request: {goal[:300]}\nJSON only.', fmt=INTENT_SCHEMA, tokens=48)
+        return _json(raw or "")
+
+    def coload_ok(self, roles: list[str], headroom: float = 0.8) -> bool:
+        """May these roles' models be resident together? Uses free RAM, so 4 GB boxes degrade to sequential."""
+        try:
+            avail = next(int(l.split()[1]) for l in open("/proc/meminfo") if l.startswith("MemAvailable")) / 2**20
+        except (OSError, StopIteration, ValueError):
+            return False
+        need = 0.0
+        for role in roles:
+            tag = self.model_for(role)
+            info = self.center.models.get(tag) if tag else None
+            need += (info.size_gb if info else 2.0) * 1.25
+        return need <= avail * headroom
+
+    def generate_file(self, goal: str, path: str, brief: str, draft: str = "") -> str | None:
+        """Coder agent: write a complete file (code, LaTeX, config) from a short brief."""
+        if not self.live:
+            return None
+        is_tex = path.lower().endswith(".tex")
+        hint = ("Write a COMPLETE compilable LaTeX document (\\documentclass ... \\end{document}) with title, abstract, sections, "
+                "and a bibliography if relevant. " if is_tex else "Write the complete, runnable contents of the file. ")
+        raw = self._ask("code", f"User goal: {goal[:300]}\nFile: {path}\nBrief: {brief[:500] or 'implement what the goal needs'}\n"
+                        f"{('Existing draft:' + draft[:600]) if draft.strip() else ''}\n{hint}Return ONLY the file contents, no markdown fences, no commentary.",
+                        tokens=2600 if is_tex else 1600)
+        if not raw:
+            return None
+        raw = re.sub(r"^```[\w+-]*\n|\n```\s*$", "", raw.strip())
+        return raw[:14000] if raw.strip() else None
+
+    def assess(self, goal: str, state: str) -> dict | None:
+        """Critic/reader agent: given the live application state, is the goal finished? what remains?"""
+        raw = self._ask("critic", f"Goal: {goal[:300]}\nLive desktop state: {state[:900]}\n"
+                        'Is the goal fully accomplished? JSON {"satisfied": bool, "remaining": "what is still to do"}',
+                        fmt=ASSESS_SCHEMA, tokens=96)
         return _json(raw or "")
 
     def refine_code(self, goal: str, path: str, draft: str) -> str | None:

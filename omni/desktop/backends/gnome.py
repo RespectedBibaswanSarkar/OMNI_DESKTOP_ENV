@@ -20,10 +20,12 @@ PATH = "/org/omni/Bridge"
 class GnomeBackend(DesktopBackend):
     name = "gnome"
 
-    def __init__(self, runner: Callable[..., subprocess.CompletedProcess], which: Callable[[str], str | None]) -> None:
+    def __init__(self, runner: Callable[..., subprocess.CompletedProcess], which: Callable[[str], str | None], tracker: Any = None) -> None:
         self.runner = runner
         self.which = which
+        self.tracker = tracker           # AtspiTracker or None: read-only fallback when the bridge is off
         self.last_error = ""
+        self._bridge_ok: bool | None = None
 
     # ------------------------------------------------------------ transport
     def _call(self, method: str, *args: str) -> Any:
@@ -61,8 +63,15 @@ class GnomeBackend(DesktopBackend):
             return None
 
     # ------------------------------------------------------------ interface
+    def bridge_up(self) -> bool:
+        self._bridge_ok = self._call("Ping") is not None
+        return self._bridge_ok
+
     def available(self) -> bool:
-        return self._call("Ping") is not None
+        return self.bridge_up()
+
+    def layers(self) -> dict[str, bool]:
+        return {"bridge": self.bridge_up(), "atspi": bool(self.tracker and self.tracker.available())}
 
     @staticmethod
     def _row(c: dict) -> Row:
@@ -73,11 +82,25 @@ class GnomeBackend(DesktopBackend):
 
     def clients(self) -> list[Row]:
         data = self._json("ListWindows")
-        return [self._row(c) for c in data if isinstance(c, dict)] if isinstance(data, list) else []
+        if isinstance(data, list):
+            return [self._row(c) for c in data if isinstance(c, dict)]
+        if self.tracker is not None:          # bridge unreachable: accessibility tree still lists windows
+            try:
+                return self.tracker.windows()
+            except Exception:  # noqa: BLE001
+                return []
+        return []
 
     def active_window(self) -> Row | None:
         data = self._json("ActiveWindow")
-        return self._row(data) if isinstance(data, dict) and data.get("id") else None
+        if isinstance(data, dict):
+            return self._row(data) if data.get("id") else None
+        if self.tracker is not None:
+            try:
+                return next((w for w in self.tracker.windows() if w["focus"] == 0), None)
+            except Exception:  # noqa: BLE001
+                return None
+        return None
 
     def active_workspace(self) -> int | None:
         value = self._call("ActiveWorkspace")
@@ -102,5 +125,7 @@ class GnomeBackend(DesktopBackend):
         return self._bool("SwitchWorkspace", f"i{workspace - 1}")
 
     def status(self) -> dict[str, Any]:
-        ok = self.available()
-        return {"backend": self.name, "available": ok, "error": "" if ok else self.last_error}
+        layers = self.layers()
+        err = "" if layers["bridge"] else (self.last_error or "bridge not reachable")
+        hint = "" if layers["bridge"] else "Enable the OMNI Bridge extension (docs/UBUNTU_GNOME_SETUP.md) for focus/close/workspace control."
+        return {"backend": self.name, "available": layers["bridge"] or layers["atspi"], "layers": layers, "error": err, "hint": hint}

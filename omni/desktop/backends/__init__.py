@@ -26,5 +26,6 @@ def detect_backend(
     if choice == "hyprland" or (not choice and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")):
         return HyprlandBackend(runner=runner, which=which)
     if choice == "gnome" or (not choice and "gnome" in desktop):
-        return GnomeBackend(runner=runner, which=which)
+        from omni.desktop.tracker import AtspiTracker
+        return GnomeBackend(runner=runner, which=which, tracker=AtspiTracker.default())
     return NullBackend()

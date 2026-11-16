@@ -79,7 +79,11 @@ def _desktop(args) -> int:
         print(registry.execute("window.list").output)
         return 0
     if args.desktop_cmd == "status":
-        print(registry.backend.status())
+        print(registry.backend.status(), "| layers:", registry.layers())
+        return 0
+    if args.desktop_cmd == "state":
+        import json as _json
+        print(_json.dumps(registry.app_state(), indent=1, default=str))
         return 0
     params = {k: _coerce(v) for k, v in (kv.split("=", 1) for kv in args.params)}
     result = registry.prepare(args.action, params)
@@ -318,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     desk_sub.add_parser("apps")
     desk_sub.add_parser("windows")
     desk_sub.add_parser("status")
+    desk_sub.add_parser("state")
     desk_run = desk_sub.add_parser("run")
     desk_run.add_argument("action")
     desk_run.add_argument("params", nargs="*", help="key=value pairs, e.g. workspace=2")
